@@ -25,3 +25,20 @@ func TestClampDistance(t *testing.T) {
 		}
 	}
 }
+
+func TestLuvBlack(t *testing.T) {
+	l := LuvFromXYZ(XYZ{})
+	near(t, "L", l.L, 0, 0)
+	near(t, "U", l.U, 0, 0)
+	near(t, "V", l.V, 0, 0)
+	x := l.XYZ()
+	near(t, "X", x.X, 0, 0)
+	near(t, "Y", x.Y, 0, 0)
+	near(t, "Z", x.Z, 0, 0)
+}
+
+func TestOkLChClampL(t *testing.T) {
+	c := OkLCh{L: 1.05, C: 0.1, H: 0.5}.Clamp()
+	near(t, "L", c.L, 1, 0)
+	near(t, "C", c.C, 0, 1e-9)
+}

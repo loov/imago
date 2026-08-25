@@ -6,8 +6,8 @@ type RGB struct{ R, G, B float64 }
 // XYZ is CIE 1931 XYZ relative to D65. It is the hub for Lab and Luv.
 type XYZ struct{ X, Y, Z float64 }
 
-// D65 is the reference white in XYZ.
-var D65 = XYZ{0.95047, 1.0, 1.08883}
+// D65 reference white in XYZ, used by Lab and Luv.
+const d65X, d65Y, d65Z = 0.95047, 1.0, 1.08883
 
 // mat is a row-major 3x3 matrix.
 type mat [3][3]float64

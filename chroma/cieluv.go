@@ -16,7 +16,7 @@ func uvPrime(c XYZ) (u, v float64) {
 
 // LuvFromXYZ converts XYZ to Luv.
 func LuvFromXYZ(c XYZ) Luv {
-	y := c.Y / D65.Y
+	y := c.Y / d65Y
 	var l float64
 	if y > labEps {
 		l = 116*math.Cbrt(y) - 16
@@ -24,7 +24,7 @@ func LuvFromXYZ(c XYZ) Luv {
 		l = labKappa * y
 	}
 	u, v := uvPrime(c)
-	un, vn := uvPrime(D65)
+	un, vn := uvPrime(XYZ{d65X, d65Y, d65Z})
 	return Luv{L: l, U: 13 * l * (u - un), V: 13 * l * (v - vn)}
 }
 
@@ -40,8 +40,8 @@ func (c Luv) XYZ() XYZ {
 	} else {
 		y = c.L / labKappa
 	}
-	y *= D65.Y
-	un, vn := uvPrime(D65)
+	y *= d65Y
+	un, vn := uvPrime(XYZ{d65X, d65Y, d65Z})
 	u, v := c.U/(13*c.L)+un, c.V/(13*c.L)+vn
 	x := y * 9 * u / (4 * v)
 	z := y * (12 - 3*u - 20*v) / (4 * v)

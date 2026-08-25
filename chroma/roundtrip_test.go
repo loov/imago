@@ -23,7 +23,7 @@ var grid = func() []SRGB {
 
 func near(t *testing.T, name string, got, want, tol float64) {
 	t.Helper()
-	if math.Abs(got-want) > tol {
+	if math.IsNaN(got) || math.IsInf(got, 0) || math.Abs(got-want) > tol {
 		t.Errorf("%s: got %v want %v", name, got, want)
 	}
 }
@@ -34,6 +34,10 @@ func nearHue(t *testing.T, name string, gotH, wantH, c float64) {
 		return
 	}
 	d := math.Abs(gotH - wantH)
+	if math.IsNaN(d) || math.IsInf(d, 0) {
+		t.Errorf("%s: got %v want %v", name, gotH, wantH)
+		return
+	}
 	if d > 0.5 {
 		d = 1 - d
 	}

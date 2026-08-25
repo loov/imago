@@ -84,9 +84,13 @@ func (c OkLCh) inGamut() bool {
 	return r.R >= lo && r.R <= hi && r.G >= lo && r.G <= hi && r.B >= lo && r.B <= hi
 }
 
-// Clamp reduces chroma until in sRGB gamut, keeping L and H fixed.
-// L outside 0..1 cannot be mapped and is returned with C = 0.
+// Clamp maps into sRGB gamut: L is clamped to 0..1, then chroma is reduced
+// (H fixed) until in gamut. L at 0 or 1 therefore yields C = 0.
 func (c OkLCh) Clamp() OkLCh {
+	c.L = math.Max(0, math.Min(1, c.L))
+	if c.L == 0 || c.L == 1 {
+		return OkLCh{c.L, 0, c.H}
+	}
 	if c.inGamut() {
 		return c
 	}

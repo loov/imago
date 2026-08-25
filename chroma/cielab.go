@@ -29,7 +29,7 @@ func labFInv(t float64) float64 {
 
 // LabFromXYZ converts XYZ to Lab.
 func LabFromXYZ(c XYZ) Lab {
-	fx, fy, fz := labF(c.X/D65.X), labF(c.Y/D65.Y), labF(c.Z/D65.Z)
+	fx, fy, fz := labF(c.X/d65X), labF(c.Y/d65Y), labF(c.Z/d65Z)
 	return Lab{L: 116*fy - 16, A: 500 * (fx - fy), B: 200 * (fy - fz)}
 }
 
@@ -37,7 +37,7 @@ func LabFromXYZ(c XYZ) Lab {
 func (c Lab) XYZ() XYZ {
 	fy := (c.L + 16) / 116
 	fx, fz := fy+c.A/500, fy-c.B/200
-	return XYZ{labFInv(fx) * D65.X, labFInv(fy) * D65.Y, labFInv(fz) * D65.Z}
+	return XYZ{labFInv(fx) * d65X, labFInv(fy) * d65Y, labFInv(fz) * d65Z}
 }
 
 // LChFromLab converts to polar form.
