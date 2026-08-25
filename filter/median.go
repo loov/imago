@@ -17,8 +17,12 @@ func mid3(a, b, c byte) byte {
 	return c
 }
 
-// Median applies a separable 3×3 median steps times.
+// Median applies a separable 3×3 median steps times. Cost is O(steps·N);
+// it is meant for small steps (hot-pixel removal with steps == 1).
 func (ch *Channel) Median(steps int) {
+	if ch.Width == 0 || ch.Height == 0 {
+		return
+	}
 	for i := 0; i < steps; i++ {
 		ch.pass3(mid3)
 	}
