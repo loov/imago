@@ -29,6 +29,7 @@ func Lerp(a, b color.NRGBA, p float32) color.NRGBA {
 }
 
 // Mix mixes a and b weighted by t/256 and (1 - t/256) respectively.
+// t = 255 gives 255/256 of a, never exactly a; use Lerp for exact endpoints.
 func Mix(a, b color.NRGBA, t uint8) color.NRGBA {
 	ti := int(t)
 	return color.NRGBA{
