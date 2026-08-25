@@ -48,36 +48,24 @@ func MulAlpha(c color.NRGBA, alpha uint8) color.NRGBA {
 	return c
 }
 
-// Premultiply converts non-premultiplied sRGB to premultiplied sRGB.
-// Multiplication happens in linear light, so each result component is
-// chroma.ToSRGB(chroma.ToLinear(c) * alpha), computed in float32.
+// Premultiply converts non-premultiplied sRGB to premultiplied sRGB in the
+// encoded channel values; matches image/color's conversion.
 func Premultiply(c color.NRGBA) color.RGBA {
-	if c.A == 0xFF {
-		return color.RGBA(c)
-	}
-	l := ToLinear(c)
-	return color.RGBA{R: to8(toSRGB32(l.R)), G: to8(toSRGB32(l.G)), B: to8(toSRGB32(l.B)), A: c.A}
+	// Same arithmetic as color.NRGBA.RGBA followed by color.RGBAModel.
+	a := uint32(c.A) * 0x101
+	mul := func(v uint8) uint8 { return uint8(uint32(v) * 0x101 * a / 0xFFFF >> 8) }
+	return color.RGBA{R: mul(c.R), G: mul(c.G), B: mul(c.B), A: c.A}
 }
 
-// LinearPremultiply converts non-premultiplied sRGB to premultiplied 8-bit
-// linear RGBA: each component is chroma.ToLinear(c) * alpha.
-func LinearPremultiply(c color.NRGBA) color.RGBA {
-	if c.A == 0xFF {
-		return color.RGBA(c)
-	}
-	l := ToLinear(c)
-	return color.RGBA{R: to8(l.R), G: to8(l.G), B: to8(l.B), A: c.A}
-}
-
-// Unpremultiply converts premultiplied sRGB to non-premultiplied sRGB.
+// Unpremultiply converts premultiplied sRGB to non-premultiplied sRGB in the
+// encoded channel values; matches image/color's conversion. Alpha 0 yields
+// the zero color.
 func Unpremultiply(c color.RGBA) color.NRGBA {
-	if c.A == 0xFF {
-		return color.NRGBA(c)
+	if c.A == 0 {
+		return color.NRGBA{}
 	}
-	return Linear{
-		R: toLinear32(float32(c.R) / 0xFF),
-		G: toLinear32(float32(c.G) / 0xFF),
-		B: toLinear32(float32(c.B) / 0xFF),
-		A: float32(c.A) / 0xFF,
-	}.NRGBA()
+	// Same arithmetic as color.RGBA.RGBA followed by color.NRGBAModel.
+	a := uint32(c.A) * 0x101
+	div := func(v uint8) uint8 { return uint8((uint32(v) * 0x101 * 0xFFFF / a) >> 8) }
+	return color.NRGBA{R: div(c.R), G: div(c.G), B: div(c.B), A: c.A}
 }

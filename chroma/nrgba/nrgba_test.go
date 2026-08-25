@@ -7,13 +7,35 @@ import (
 	"github.com/loov/imago/chroma"
 )
 
-func TestLinearPremultiplyBoundary(t *testing.T) {
-	for col := 0; col <= 0xFF; col++ {
-		for alpha := 0; alpha <= 0xFF; alpha++ {
-			in := color.NRGBA{R: uint8(col), A: uint8(alpha)}
-			premul := LinearPremultiply(in)
-			if premul.A != uint8(alpha) || premul.R > premul.A {
-				t.Fatalf("%v: got %v", in, premul)
+func TestPremultiply(t *testing.T) {
+	if got, want := Premultiply(color.NRGBA{255, 255, 255, 128}), (color.RGBA{128, 128, 128, 128}); got != want {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for col := 0; col <= 0xFF; col += 5 {
+		for alpha := 0; alpha <= 0xFF; alpha += 5 {
+			c := color.NRGBA{R: uint8(col), G: uint8(255 - col), B: uint8(col / 2), A: uint8(alpha)}
+			p := Premultiply(c)
+			if p.R > p.A || p.G > p.A || p.B > p.A {
+				t.Fatalf("%v: invariant broken %v", c, p)
+			}
+			if want := color.RGBAModel.Convert(c).(color.RGBA); p != want {
+				t.Fatalf("%v: got %v want %v", c, p, want)
+			}
+			u := Unpremultiply(p)
+			if want := color.NRGBAModel.Convert(p).(color.NRGBA); u != want {
+				t.Fatalf("%v: unpremultiply got %v want %v", p, u, want)
+			}
+			if alpha == 0xFF && u != c {
+				t.Fatalf("%v: roundtrip got %v", c, u)
+			}
+			if alpha >= 128 {
+				// 8-bit premultiplication loses 255/alpha of precision.
+				tol := (255 + alpha - 1) / alpha
+				for _, d := range [][2]uint8{{u.R, c.R}, {u.G, c.G}, {u.B, c.B}} {
+					if x, y := int(d[0]), int(d[1]); x-y > tol || y-x > tol {
+						t.Fatalf("%v: roundtrip got %v", c, u)
+					}
+				}
 			}
 		}
 	}
