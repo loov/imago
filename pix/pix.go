@@ -1,5 +1,3 @@
-// Package pix provides a premultiplied float RGBA image used as the common
-// pixel I/O layer for scaling algorithms.
 package pix
 
 import (

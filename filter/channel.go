@@ -1,7 +1,3 @@
-// Package filter implements separable 3-tap filters over a byte plane.
-//
-// Unlike the rest of the module, filters mutate the Channel in place; use
-// Clone first to keep the original.
 package filter
 
 // Channel is a single byte plane, row-major, with Stride >= Width.

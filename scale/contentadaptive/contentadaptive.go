@@ -1,4 +1,3 @@
-// Package contentadaptive implements content-adaptive image downscaling.
 package contentadaptive
 
 import (

@@ -1,4 +1,3 @@
-// Package resample implements separable filtered image resampling.
 package resample
 
 import (

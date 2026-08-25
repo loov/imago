@@ -1,4 +1,3 @@
-// Package pixelart implements pixel-art upscalers: Scale2x, Scale3x and xBR.
 package pixelart
 
 import (

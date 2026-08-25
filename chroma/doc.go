@@ -10,7 +10,7 @@
 //	                       OkLCh
 //
 // RGB is linear light in sRGB primaries; SRGB is the gamma-encoded form.
-// XYZ uses the D65 white point. Hue is in turns [0, 1) — a fraction of the full circle — and is
+// XYZ uses the D65 white point. Hue is in turns [0, 1), a fraction of the full circle, and is
 // 0 for achromatic colors. Lab and Luv use L in 0..100; Oklab uses L in 0..1.
 //
 // Conversions never clamp: out-of-gamut input produces out-of-range output.

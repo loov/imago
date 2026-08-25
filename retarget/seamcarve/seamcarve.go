@@ -1,4 +1,3 @@
-// Package seamcarve implements content-aware image shrinking by seam removal.
 package seamcarve
 
 import (
@@ -48,7 +47,7 @@ func Resize(src *image.NRGBA, width, height int) (*image.NRGBA, error) {
 }
 
 // removeSeam removes one minimum-energy vertical seam from a w×h image.
-// ponytail: energy is recomputed from scratch each call (O(w·h) per seam);
+// Energy is recomputed from scratch each call (O(w·h) per seam);
 // update only the columns adjacent to the removed seam if this gets slow.
 func removeSeam(pix []color.NRGBA, w, h int) []color.NRGBA {
 	at := func(x, y int) color.NRGBA {

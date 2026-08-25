@@ -1,4 +1,3 @@
-// Package l0 implements L0-regularized image downscaling.
 package l0
 
 import (
@@ -123,7 +122,7 @@ func solve(input []float64, up *upsampler, width, height int, lambda float64) []
 	}
 
 	h, v, grad := make([]float64, n), make([]float64, n), make([]float64, n)
-	// ponytail: fixed β schedule and gradient-descent inner loop instead of the
+	// Fixed β schedule and gradient-descent inner loop instead of the
 	// paper's FFT solve; converges slowly for large outputs, switch to FFT if too slow.
 	beta := max(2*lambda, 1e-3)
 	iterations = 0

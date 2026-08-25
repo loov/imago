@@ -1,4 +1,3 @@
-// Package dpid implements detail-preserving image downscaling.
 package dpid
 
 import (

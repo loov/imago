@@ -1,8 +1,3 @@
-// Package ssim implements the SSIM and MS-SSIM image similarity indices.
-//
-// Both indices compare images on luma only: Rec. 601 Y computed from the
-// sRGB-encoded straight (un-premultiplied) RGB channels in [0, 1]. Alpha is
-// otherwise ignored.
 package ssim
 
 import (

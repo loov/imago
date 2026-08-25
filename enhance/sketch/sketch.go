@@ -1,6 +1,3 @@
-// Package sketch cleans up photographed/scanned pencil sketches by flattening
-// uneven paper lighting to a uniform white, a port of
-// https://github.com/loov/sketchure (cleanup.ByBase).
 package sketch
 
 import (

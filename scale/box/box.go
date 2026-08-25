@@ -1,4 +1,3 @@
-// Package box implements area-average image downscaling.
 package box
 
 import (

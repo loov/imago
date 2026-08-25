@@ -1,4 +1,3 @@
-// Package perceptual implements SSIM-based perceptual image downscaling.
 package perceptual
 
 import (
