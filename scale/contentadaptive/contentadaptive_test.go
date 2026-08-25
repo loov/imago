@@ -3,6 +3,7 @@ package contentadaptive
 import (
 	"image"
 	"image/color"
+	"math"
 	"testing"
 
 	"github.com/loov/imago/pix"
@@ -117,41 +118,58 @@ func TestResize_ColumnUniformInputStaysColumnUniform(t *testing.T) {
 	}
 }
 
-// Defect 2: the spatial variance clamp ignored the downscale ratio.
-func TestClampCovariance_ScalesWithRatio(t *testing.T) {
-	k := kernel{covXX: 100, covYY: 100}
-	clampCovariance(&k, 16)
-	if k.covXX != maxSpatialVariance*16 || k.covYY != maxSpatialVariance*16 {
-		t.Fatalf("clamped to %v, %v; want %v", k.covXX, k.covYY, maxSpatialVariance*16)
+func TestClampCovariance_NormalizedAnisotropic(t *testing.T) {
+	rx, ry := 4.0, 2.0
+	k := kernel{covXX: 100 * rx * rx, covYY: 100 * ry * ry}
+	clampCovariance(&k, rx, ry)
+	wantXX, wantYY := maxSpatialVariance*rx*rx, maxSpatialVariance*ry*ry
+	if math.Abs(k.covXX-wantXX) > 1e-9 || math.Abs(k.covYY-wantYY) > 1e-9 || math.Abs(k.covXY) > 1e-9 {
+		t.Fatalf("clamped to %v, %v, %v; want %v, 0, %v", k.covXX, k.covXY, k.covYY, wantXX, wantYY)
 	}
 }
 
-// Defect 4: color variance was applied as a standard deviation.
-func TestResize_GradientNearBoxAverage(t *testing.T) {
-	values := make([]uint8, 16)
-	for i := range values {
-		values[i] = uint8(i * 17)
+// Pseudocode lines 23–26: w is normalized per kernel before the per-pixel γ.
+func TestExpectation_NormalizesPerKernelFirst(t *testing.T) {
+	pixels := make([]pixel, 2)
+	for i := range pixels {
+		pixels[i].alpha = 1
 	}
-	dst := mustResize(t, grayRow(values...), 4, 1)
-	for x, want := range []uint8{30, 94, 158, 222} {
-		if got := dst.NRGBAAt(x, 0).R; channelDifference(got, want) > 8 {
-			t.Fatalf("pixel %d = %d, want ~%d", x, got, want)
+	// Both kernels are spatially flat (huge covariance) and color-neutral, so
+	// every raw weight is ~1. Kernel a covers one pixel, kernel b covers two.
+	base := kernel{covXX: 1e12, covYY: 1e12, sigma: 1, color: lab{}}
+	a, b := base, base
+	a.x0, a.x1, a.y1, a.stride, a.gamma = 0, 1, 1, 1, make([]float64, 1)
+	b.x0, b.x1, b.y1, b.stride, b.gamma = 0, 2, 1, 2, make([]float64, 2)
+	kernels := []kernel{a, b}
+	expectation(kernels, pixels, 2, make([]float64, 2), make([]float64, 2))
+	// Pixel 0: a=1, b=½ → γa=⅔, γb=⅓. Pixel 1: only b → γb=1.
+	got := []float64{kernels[0].gamma[0], kernels[1].gamma[0], kernels[1].gamma[1]}
+	for i, want := range []float64{2.0 / 3, 1.0 / 3, 1} {
+		if math.Abs(got[i]-want) > 1e-6 {
+			t.Fatalf("gamma = %v, want [2/3 1/3 1]", got)
 		}
 	}
 }
 
-// Defect 5: covariance was accumulated around the stale mean.
-func TestMaximize_CovarianceAroundUpdatedMean(t *testing.T) {
-	pixels := make([]pixel, 3)
-	for i := range pixels {
-		pixels[i].alpha = 1
+func TestResize_HardEdgeStaysSharp(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 16, 8))
+	for y := range 8 {
+		for x := range 16 {
+			v := uint8(0)
+			if x >= 8 {
+				v = 255
+			}
+			src.SetNRGBA(x, y, color.NRGBA{R: v, G: v, B: v, A: 255})
+		}
 	}
-	k := kernel{meanX: 10, meanY: 10, x0: 0, y0: 0, x1: 3, y1: 1, stride: 3, gamma: []float64{1, 0, 1}}
-	kernels := []kernel{k}
-	maximize(kernels, pixels, 3)
-	got := kernels[0]
-	if got.meanX != 1.5 || got.covXX != 1 {
-		t.Fatalf("meanX, covXX = %v, %v; want 1.5, 1", got.meanX, got.covXX)
+	dst := mustResize(t, src, 4, 2)
+	for y := range 2 {
+		for x := range 4 {
+			got := dst.NRGBAAt(x, y).R
+			if (x < 2 && got > 8) || (x >= 2 && got < 247) {
+				t.Fatalf("pixel (%d, %d) = %d", x, y, got)
+			}
+		}
 	}
 }
 

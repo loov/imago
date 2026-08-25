@@ -10,18 +10,20 @@ import (
 )
 
 const (
-	// ponytail: a fixed cap bounds the paper's acknowledged non-convergent cases;
-	// expose tuning only if real workloads need it.
+	// Deviates from pseudocode line 7 ("loop until no change"): a fixed cap and
+	// an epsilon bound the paper's acknowledged non-convergent cases.
 	maxIterations      = 64
 	convergenceEpsilon = 1e-6
-	// Spatial variance limits, in units of the squared downscale ratio.
+	// Spatial variance limits on the singular values of Σ in normalized
+	// (output-pixel) coordinates.
 	minSpatialVariance = 0.05
 	maxSpatialVariance = 0.1
-	// Initial color variance; grows by 10% per constraint violation.
-	initialColorVariance = 1e-4
+	// Initial color standard deviation σ; grows by 10% per constraint violation.
+	// The pseudocode gives no Lab scale for σ=1e-4; we assume Lab normalized to ~0..1.
+	initialColorSigma = 1e-4
 )
 
-// Lab normalized to roughly 0..1 so the color-variance constants apply.
+// Lab normalized to roughly 0..1, the scale initialColorSigma assumes.
 type lab struct {
 	l, a, b float64
 }
@@ -54,6 +56,9 @@ type kernel struct {
 // Kopf, Shamir, and Peers, "Content-Adaptive Image Downscaling" (2013).
 // See https://doi.org/10.1145/2508363.2508370.
 // Width and height must be positive and no larger than src in either dimension.
+//
+// Spatial quantities (pixel positions, kernel means, covariances) are in input
+// pixel units; the covariance clamp is applied in normalized output-pixel units.
 func Resize(src *pix.Image, width, height int) (*pix.Image, error) {
 	if src == nil || src.W == 0 || src.H == 0 {
 		return nil, errors.New("contentadaptive: empty image")
@@ -104,6 +109,8 @@ func initializeKernels(inputWidth, inputHeight, width, height int, rx, ry float6
 	kernels := make([]kernel, width*height)
 	for y := range height {
 		for x := range width {
+			// Deviates from pseudocode line 20/table: pixel centers are at x+½ so
+			// they share the kernel centers' ½ offset (see expectation).
 			centerX := (float64(x) + 0.5) * rx
 			centerY := (float64(y) + 0.5) * ry
 			x0 := max(0, int(math.Floor(centerX-2*rx))+1)
@@ -116,7 +123,7 @@ func initializeKernels(inputWidth, inputHeight, width, height int, rx, ry float6
 				centerX: centerX, centerY: centerY,
 				meanX: centerX, meanY: centerY,
 				covXX: rx * rx / 9, covYY: ry * ry / 9,
-				color: lab{l: 0.5, a: 0.5, b: 0.5}, alpha: 0.5, sigma: initialColorVariance,
+				color: lab{l: 0.5, a: 0.5, b: 0.5}, alpha: 0.5, sigma: initialColorSigma,
 				x0: x0, y0: y0, x1: x1, y1: y1, stride: stride,
 				gamma: make([]float64, stride*(y1-y0)),
 			}
@@ -125,6 +132,9 @@ func initializeKernels(inputWidth, inputHeight, width, height int, rx, ry float6
 	return kernels
 }
 
+// expectation computes γ: each kernel's weights are first normalized over its
+// own support (pseudocode lines 23–26), then per pixel across kernels (line 30).
+// Both normalizations run in the log domain since σ makes raw weights underflow.
 func expectation(kernels []kernel, pixels []pixel, inputWidth int, pixelMax, pixelSum []float64) {
 	for i := range pixelMax {
 		pixelMax[i] = math.Inf(-1)
@@ -137,17 +147,32 @@ func expectation(kernels []kernel, pixels []pixel, inputWidth int, pixelMax, pix
 		inverseXX := k.covYY / determinant
 		inverseXY := -k.covXY / determinant
 		inverseYY := k.covXX / determinant
+		twoSigmaSquared := 2 * k.sigma * k.sigma
 
+		maxLogWeight := math.Inf(-1)
 		for y := k.y0; y < k.y1; y++ {
 			for x := k.x0; x < k.x1; x++ {
 				p := pixels[x+y*inputWidth]
 				dx, dy := float64(x)+0.5-k.meanX, float64(y)+0.5-k.meanY
 				dl, da, db := p.color.l-k.color.l, p.color.a-k.color.a, p.color.b-k.color.b
-				// Transparent pixels carry no color, so their color distance is scaled by alpha.
+				// Deviates from pseudocode line 21: color distance is scaled by
+				// alpha so transparent pixels carry no color.
 				logWeight := -0.5*(dx*dx*inverseXX+2*dx*dy*inverseXY+dy*dy*inverseYY) -
-					p.alpha*(dl*dl+da*da+db*db)/(2*k.sigma)
+					p.alpha*(dl*dl+da*da+db*db)/twoSigmaSquared
+				k.gamma[(x-k.x0)+(y-k.y0)*k.stride] = logWeight
+				maxLogWeight = max(maxLogWeight, logWeight)
+			}
+		}
+		var kernelSum float64
+		for _, logWeight := range k.gamma {
+			kernelSum += math.Exp(logWeight - maxLogWeight)
+		}
+		kernelNormalization := maxLogWeight + math.Log(kernelSum)
+		for y := k.y0; y < k.y1; y++ {
+			for x := k.x0; x < k.x1; x++ {
 				index := (x - k.x0) + (y-k.y0)*k.stride
-				k.gamma[index] = logWeight
+				k.gamma[index] -= kernelNormalization
+				logWeight := k.gamma[index]
 				pixelIndex := x + y*inputWidth
 				if logWeight <= pixelMax[pixelIndex] {
 					pixelSum[pixelIndex] += math.Exp(logWeight - pixelMax[pixelIndex])
@@ -165,8 +190,7 @@ func expectation(kernels []kernel, pixels []pixel, inputWidth int, pixelMax, pix
 			for x := k.x0; x < k.x1; x++ {
 				index := (x - k.x0) + (y-k.y0)*k.stride
 				pixelIndex := x + y*inputWidth
-				pixelNormalization := pixelMax[pixelIndex] + math.Log(pixelSum[pixelIndex])
-				k.gamma[index] = math.Exp(k.gamma[index] - pixelNormalization)
+				k.gamma[index] = math.Exp(k.gamma[index] - pixelMax[pixelIndex] - math.Log(pixelSum[pixelIndex]))
 			}
 		}
 	}
@@ -181,14 +205,17 @@ func maximize(kernels []kernel, pixels []pixel, inputWidth int) {
 				gamma := k.gamma[(x-k.x0)+(y-k.y0)*k.stride]
 				p := pixels[x+y*inputWidth]
 				px, py := float64(x)+0.5, float64(y)+0.5
+				// Pseudocode line 37: covariance is taken about the old μ.
+				dx, dy := px-k.meanX, py-k.meanY
 				weight += gamma
 				meanX += gamma * px
 				meanY += gamma * py
-				xx += gamma * px * px
-				xy += gamma * px * py
-				yy += gamma * py * py
+				xx += gamma * dx * dx
+				xy += gamma * dx * dy
+				yy += gamma * dy * dy
 				alpha += gamma * p.alpha
-				// Premultiplied average: color contributes in proportion to its alpha.
+				// Deviates from pseudocode line 39: ν is an alpha-weighted mean so
+				// transparent pixels carry no color.
 				cw := gamma * p.alpha
 				colorWeight += cw
 				l += cw * p.color.l
@@ -199,10 +226,8 @@ func maximize(kernels []kernel, pixels []pixel, inputWidth int) {
 		if weight == 0 {
 			continue
 		}
+		k.covXX, k.covXY, k.covYY = xx/weight, xy/weight, yy/weight
 		k.meanX, k.meanY = meanX/weight, meanY/weight
-		k.covXX = xx/weight - k.meanX*k.meanX
-		k.covXY = xy/weight - k.meanX*k.meanY
-		k.covYY = yy/weight - k.meanY*k.meanY
 		k.alpha = alpha / weight
 		if colorWeight > 0 {
 			k.color = lab{l: l / colorWeight, a: a / colorWeight, b: b / colorWeight}
@@ -234,7 +259,7 @@ func correct(kernels []kernel, inputWidth, inputHeight, width, height int, rx, r
 		k := &kernels[i]
 		k.meanX = min(max((k.meanX+neighborMeans[i][0])/2, k.centerX-rx/4), k.centerX+rx/4)
 		k.meanY = min(max((k.meanY+neighborMeans[i][1])/2, k.centerY-ry/4), k.centerY+ry/4)
-		clampCovariance(k, rx*ry)
+		clampCovariance(k, rx, ry)
 	}
 
 	for ki := range kernels {
@@ -250,7 +275,12 @@ func correct(kernels []kernel, inputWidth, inputHeight, width, height int, rx, r
 			for y := k.y0; y < k.y1; y++ {
 				for x := k.x0; x < k.x1; x++ {
 					gamma := k.gamma[(x-k.x0)+(y-k.y0)*k.stride]
-					projection := max(0, (float64(x)+0.5-k.meanX)*dx+(float64(y)+0.5-k.meanY)*dy)
+					// Deviates from the pseudocode C-step shape constraint (s ← Σ γ max(0,(pi−μk)ᵀd)² vs
+					// 0.2·rx): taken literally in input pixels the raw sum is ~10×
+					// the limit for every kernel, so σ grows without bound and the
+					// result blurs. Use the mean squared projection in normalized
+					// (output-pixel) units against 0.2 instead.
+					projection := max(0, (float64(x)+0.5-k.meanX)/rx*dx+(float64(y)+0.5-k.meanY)/ry*dy)
 					weight += gamma
 					directionalVariance += gamma * projection * projection
 					edgeStrength += gamma * n.gammaAt(x, y)
@@ -261,7 +291,7 @@ func correct(kernels []kernel, inputWidth, inputHeight, width, height int, rx, r
 			}
 
 			falseEdge := false
-			if (offset[0] == 0 || offset[1] == 0) && edgeStrength < 0.08*rx*ry {
+			if (offset[0] == 0 || offset[1] == 0) && edgeStrength < 0.08 {
 				ox, oy := edgeOrientation(k, n, inputWidth, inputHeight)
 				magnitude := math.Hypot(ox, oy)
 				if magnitude > 0 {
@@ -269,10 +299,7 @@ func correct(kernels []kernel, inputWidth, inputHeight, width, height int, rx, r
 					falseEdge = min(cosine, 1) < math.Cos(25*math.Pi/180)
 				}
 			}
-			// The published expression calls s a variance, so normalize its
-			// weighted mass and compare it with a squared spatial distance.
-			directionalLimit := 0.2 * (dx*dx*rx*rx + dy*dy*ry*ry)
-			if directionalVariance/weight > directionalLimit || falseEdge {
+			if directionalVariance/weight > 0.2 || falseEdge {
 				k.sigma *= 1.1
 				n.sigma *= 1.1
 			}
@@ -288,16 +315,19 @@ var neighborOffsets = [...][2]int{
 	{-1, 1}, {0, 1}, {1, 1},
 }
 
-func clampCovariance(k *kernel, scale float64) {
-	middle := (k.covXX + k.covYY) / 2
-	radius := math.Hypot((k.covXX-k.covYY)/2, k.covXY)
-	larger := min(max(middle+radius, minSpatialVariance*scale), maxSpatialVariance*scale)
-	smaller := min(max(middle-radius, minSpatialVariance*scale), maxSpatialVariance*scale)
-	angle := math.Atan2(2*k.covXY, k.covXX-k.covYY) / 2
+// clampCovariance clamps the singular values of Σ to [min,max]SpatialVariance
+// in normalized coordinates: Σn = D⁻¹ Σ D⁻ᵀ with D = diag(rx, ry).
+func clampCovariance(k *kernel, rx, ry float64) {
+	xx, xy, yy := k.covXX/(rx*rx), k.covXY/(rx*ry), k.covYY/(ry*ry)
+	middle := (xx + yy) / 2
+	radius := math.Hypot((xx-yy)/2, xy)
+	larger := min(max(middle+radius, minSpatialVariance), maxSpatialVariance)
+	smaller := min(max(middle-radius, minSpatialVariance), maxSpatialVariance)
+	angle := math.Atan2(2*xy, xx-yy) / 2
 	c, s := math.Cos(angle), math.Sin(angle)
-	k.covXX = larger*c*c + smaller*s*s
-	k.covXY = (larger - smaller) * c * s
-	k.covYY = larger*s*s + smaller*c*c
+	k.covXX = (larger*c*c + smaller*s*s) * rx * rx
+	k.covXY = (larger - smaller) * c * s * rx * ry
+	k.covYY = (larger*s*s + smaller*c*c) * ry * ry
 }
 
 func (k *kernel) gammaAt(x, y int) float64 {
