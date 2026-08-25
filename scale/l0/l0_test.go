@@ -3,6 +3,7 @@ package l0
 import (
 	"image"
 	"image/color"
+	"math"
 	"testing"
 
 	"github.com/loov/imago/pix"
@@ -141,4 +142,58 @@ func TestResize(t *testing.T) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
 	})
+}
+
+func assertValid(t *testing.T, m *pix.Image) {
+	t.Helper()
+	for p := 0; p < len(m.Pix); p += 4 {
+		a := m.Pix[p+3]
+		if a < 0 || a > 1 {
+			t.Fatalf("pixel %d: alpha %v out of [0,1]", p/4, a)
+		}
+		for c := range 3 {
+			if v := m.Pix[p+c]; v < 0 || v > a {
+				t.Fatalf("pixel %d: channel %d = %v out of [0,%v]", p/4, c, v, a)
+			}
+		}
+	}
+}
+
+func TestResizeClampsStepEdge(t *testing.T) {
+	src := pix.New(8, 2)
+	for y := range 2 {
+		for x := range 8 {
+			v := float64(x / 4)
+			src.Set(x, y, v, v, v, 1)
+		}
+	}
+	for _, lambda := range []float64{0, DefaultLambda} {
+		dst, err := Resize(src, 4, 1, lambda)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertValid(t, dst)
+	}
+}
+
+func TestResizeRejectsNonFiniteLambda(t *testing.T) {
+	src := pix.New(4, 4)
+	for _, lambda := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if _, err := Resize(src, 2, 2, lambda); err == nil {
+			t.Fatalf("lambda %v accepted", lambda)
+		}
+	}
+}
+
+func TestResizeConverges(t *testing.T) {
+	src := pix.New(8, 8)
+	for p := 0; p < len(src.Pix); p += 4 {
+		src.Pix[p], src.Pix[p+1], src.Pix[p+2], src.Pix[p+3] = 0.5, 0.5, 0.5, 1
+	}
+	if _, err := Resize(src, 2, 2, DefaultLambda); err != nil {
+		t.Fatal(err)
+	}
+	if iterations >= 8 {
+		t.Fatalf("uniform image took %d outer iterations", iterations)
+	}
 }

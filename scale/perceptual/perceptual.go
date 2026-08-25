@@ -44,7 +44,7 @@ func Resize(src *pix.Image, width, height int) (*pix.Image, error) {
 		out.SetChannel(i, downscale(channel, preparedWidth, width, height, scaleX, scaleY))
 	}
 
-	return out, nil
+	return out.Clamp(), nil
 }
 
 func downscale(h []float64, inputWidth, width, height, scaleX, scaleY int) []float64 {

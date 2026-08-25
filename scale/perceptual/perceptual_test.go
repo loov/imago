@@ -112,3 +112,28 @@ func TestResize(t *testing.T) {
 		}
 	})
 }
+
+func assertValid(t *testing.T, m *pix.Image) {
+	t.Helper()
+	for p := 0; p < len(m.Pix); p += 4 {
+		a := m.Pix[p+3]
+		if a < 0 || a > 1 {
+			t.Fatalf("pixel %d: alpha %v out of [0,1]", p/4, a)
+		}
+		for c := range 3 {
+			if v := m.Pix[p+c]; v < 0 || v > a {
+				t.Fatalf("pixel %d: channel %d = %v out of [0,%v]", p/4, c, v, a)
+			}
+		}
+	}
+}
+
+func TestResizeClampsSinglePixel(t *testing.T) {
+	src := pix.New(4, 4)
+	src.Set(1, 1, 1, 1, 1, 1)
+	dst, err := Resize(src, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValid(t, dst)
+}

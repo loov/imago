@@ -118,3 +118,78 @@ func TestResize(t *testing.T) {
 		}
 	})
 }
+
+func assertValid(t *testing.T, m *pix.Image) {
+	t.Helper()
+	for p := 0; p < len(m.Pix); p += 4 {
+		a := m.Pix[p+3]
+		if a < 0 || a > 1 {
+			t.Fatalf("pixel %d: alpha %v out of [0,1]", p/4, a)
+		}
+		for c := range 3 {
+			if v := m.Pix[p+c]; v < 0 || v > a {
+				t.Fatalf("pixel %d: channel %d = %v out of [0,%v]", p/4, c, v, a)
+			}
+		}
+	}
+}
+
+func TestResizeClampsRinging(t *testing.T) {
+	src := pix.New(4, 1)
+	for x := range 4 {
+		v := float64(x / 2)
+		src.Set(x, 0, v, v, v, 1)
+	}
+	dst, err := Resize(src, 8, 1, Lanczos3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValid(t, dst)
+}
+
+func TestResizeInvalidFilter(t *testing.T) {
+	src := pix.New(4, 4)
+	if _, err := Resize(src, 2, 2, Filter{}); err == nil {
+		t.Fatal("Filter{} accepted")
+	}
+	zero := Filter{Support: 1, Weight: func(float64) float64 { return 0 }}
+	if _, err := Resize(src, 2, 2, zero); err == nil {
+		t.Fatal("zero filter accepted")
+	}
+}
+
+func TestResizePassOrder(t *testing.T) {
+	for _, tc := range [][4]int{{1, 64, 64, 1}, {64, 1, 1, 64}} {
+		src := pix.New(tc[0], tc[1])
+		for p := 0; p < len(src.Pix); p += 4 {
+			src.Pix[p], src.Pix[p+1], src.Pix[p+2], src.Pix[p+3] = 0.5, 0.25, 0.125, 1
+		}
+		dst, err := Resize(src, tc[2], tc[3], Lanczos3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dst.W != tc[2] || dst.H != tc[3] {
+			t.Fatalf("size %dx%d", dst.W, dst.H)
+		}
+		for p := 0; p < len(dst.Pix); p += 4 {
+			for c, want := range []float64{0.5, 0.25, 0.125, 1} {
+				if got := dst.Pix[p+c]; got < want-1e-9 || got > want+1e-9 {
+					t.Fatalf("%v: pixel %d channel %d = %v, want %v", tc, p/4, c, got, want)
+				}
+			}
+		}
+	}
+}
+
+func BenchmarkResize_Tall(b *testing.B) {
+	src := pix.New(1, 2000)
+	for i := range src.Pix {
+		src.Pix[i] = 1
+	}
+	b.ReportAllocs()
+	for range b.N {
+		if _, err := Resize(src, 2000, 1, Lanczos3); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

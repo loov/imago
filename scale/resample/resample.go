@@ -63,20 +63,38 @@ func Resize(src *pix.Image, width, height int, f Filter) (*pix.Image, error) {
 	if width <= 0 || height <= 0 {
 		return nil, errors.New("resample: output dimensions must be positive")
 	}
+	if f.Weight == nil || !(f.Support > 0) || math.IsInf(f.Support, 0) {
+		return nil, errors.New("resample: invalid filter")
+	}
 	if width == inputWidth && height == inputHeight {
 		return src.Clone(), nil
 	}
 
-	out := pix.New(width, height)
-	out.Pix = pass(f, src.Pix, inputWidth, inputHeight, width, 4, 4*inputWidth, 4, 4*width)
-	out.Pix = pass(f, out.Pix, inputHeight, width, height, 4*width, 4, 4*width, 4)
-	return out, nil
+	// Run the pass with the smaller intermediate image first.
+	var buf []float64
+	var err error
+	if width*inputHeight <= inputWidth*height {
+		buf, err = pass(f, src.Pix, inputWidth, inputHeight, width, 4, 4*inputWidth, 4, 4*width)
+		if err == nil {
+			buf, err = pass(f, buf, inputHeight, width, height, 4*width, 4, 4*width, 4)
+		}
+	} else {
+		buf, err = pass(f, src.Pix, inputHeight, inputWidth, height, 4*inputWidth, 4, 4*inputWidth, 4)
+		if err == nil {
+			buf, err = pass(f, buf, inputWidth, height, width, 4, 4*inputWidth, 4, 4*width)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := &pix.Image{W: width, H: height, Pix: buf}
+	return out.Clamp(), nil
 }
 
 // pass resamples one axis from n to m samples across the given number of
 // lines. Sample j of a line is at j*stride + line*lineStride in src and
 // i*dstStride + line*dstLineStride in the result.
-func pass(f Filter, src []float64, n, lines, m, stride, lineStride, dstStride, dstLineStride int) []float64 {
+func pass(f Filter, src []float64, n, lines, m, stride, lineStride, dstStride, dstLineStride int) ([]float64, error) {
 	scale := float64(n) / float64(m)
 	widen := max(scale, 1)
 	support := f.Support * widen
@@ -92,6 +110,9 @@ func pass(f Filter, src []float64, n, lines, m, stride, lineStride, dstStride, d
 			weights = append(weights, w)
 			sum += w
 		}
+		if sum == 0 || math.IsInf(sum, 0) || math.IsNaN(sum) {
+			return nil, errors.New("resample: filter normalizes to zero")
+		}
 		for line := range lines {
 			var acc [4]float64
 			for k, w := range weights {
@@ -106,5 +127,5 @@ func pass(f Filter, src []float64, n, lines, m, stride, lineStride, dstStride, d
 			}
 		}
 	}
-	return dst
+	return dst, nil
 }

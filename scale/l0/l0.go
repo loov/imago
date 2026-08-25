@@ -3,6 +3,7 @@ package l0
 
 import (
 	"errors"
+	"math"
 
 	"github.com/loov/imago/pix"
 )
@@ -20,14 +21,16 @@ const DefaultLambda = 0.01
 // squared magnitude is below λ/β are pushed to zero, and the remaining
 // least-squares problem is solved by gradient descent while β grows.
 // lambda controls sparsity; lambda == 0 yields the plain least-squares (box-like) result.
+// The β loop exits early once the gradients of D match the auxiliary variables
+// to within 1e-6, at which point growing β no longer changes the solution.
 // Width and height must be positive and no larger than src in either dimension.
 func Resize(src *pix.Image, width, height int, lambda float64) (*pix.Image, error) {
 	if src == nil || src.W == 0 || src.H == 0 {
 		return nil, errors.New("l0: empty image")
 	}
 	inputWidth, inputHeight := src.W, src.H
-	if lambda < 0 {
-		return nil, errors.New("l0: lambda must be non-negative")
+	if lambda < 0 || math.IsNaN(lambda) || math.IsInf(lambda, 0) {
+		return nil, errors.New("l0: lambda must be finite and non-negative")
 	}
 	if width <= 0 || height <= 0 || width > inputWidth || height > inputHeight {
 		return nil, errors.New("l0: output dimensions must be positive and no larger than the input")
@@ -42,8 +45,11 @@ func Resize(src *pix.Image, width, height int, lambda float64) (*pix.Image, erro
 		out.SetChannel(i, solve(src.Channel(i), up, width, height, lambda))
 	}
 
-	return out, nil
+	return out.Clamp(), nil
 }
+
+// iterations counts outer β iterations across all channels of the last Resize (test hook).
+var iterations int
 
 // upsampler holds the bilinear weights mapping each input pixel to 4 output pixels.
 type upsampler struct {
@@ -96,21 +102,24 @@ func solve(input []float64, up *upsampler, width, height int, lambda float64) []
 	// ponytail: fixed β schedule and gradient-descent inner loop instead of the
 	// paper's FFT solve; converges slowly for large outputs, switch to FFT if too slow.
 	beta := max(2*lambda, 1e-3)
+	iterations = 0
 	for range 32 {
+		iterations++
 		// Auxiliary gradient step: keep gradients with ‖(h,v)‖² ≥ λ/β, zero the rest.
 		for y := range height {
 			for x := range width {
 				i := x + y*width
-				h[i], v[i] = 0, 0
+				var hh, vv float64
 				if x+1 < width {
-					h[i] = d[i+1] - d[i]
+					hh = d[i+1] - d[i]
 				}
 				if y+1 < height {
-					v[i] = d[i+width] - d[i]
+					vv = d[i+width] - d[i]
 				}
-				if h[i]*h[i]+v[i]*v[i] < lambda/beta {
-					h[i], v[i] = 0, 0
+				if hh*hh+vv*vv < lambda/beta {
+					hh, vv = 0, 0
 				}
+				h[i], v[i] = hh, vv
 			}
 		}
 		// Least-squares step: gradient descent on ‖U(D) − I‖² + β(‖∂xD − h‖² + ‖∂yD − v‖²).
@@ -149,6 +158,22 @@ func solve(input []float64, up *upsampler, width, height int, lambda float64) []
 			for i := range d {
 				d[i] -= step * grad[i]
 			}
+		}
+		// Converged once ∂D matches (h,v): the penalty is zero, so growing β changes nothing.
+		var residual float64
+		for y := range height {
+			for x := range width {
+				i := x + y*width
+				if x+1 < width {
+					residual = max(residual, math.Abs(d[i+1]-d[i]-h[i]))
+				}
+				if y+1 < height {
+					residual = max(residual, math.Abs(d[i+width]-d[i]-v[i]))
+				}
+			}
+		}
+		if residual < 1e-6 {
+			break
 		}
 		beta *= 2
 		if beta > 1e5 {
