@@ -3,6 +3,7 @@
 package pix
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -12,6 +13,9 @@ import (
 
 // Image is a premultiplied RGBA float image with origin (0,0).
 // Values are in the encoding of the source (sRGB-encoded for sRGB input); Image does no color conversion.
+//
+// Invariant: A is in [0,1] and each of R, G, B is in [0,A]. Filters may
+// temporarily violate this; Clamp restores it.
 type Image struct {
 	W, H int
 	Pix  []float64 // 4*W*H, premultiplied R,G,B,A in 0..1, row-major
@@ -19,8 +23,14 @@ type Image struct {
 
 // New returns a zeroed image of the given size.
 func New(w, h int) *Image {
-	if w <= 0 || h <= 0 {
-		return &Image{W: max(w, 0), H: max(h, 0)}
+	if w < 0 || h < 0 {
+		panic("pix: negative image dimensions")
+	}
+	if w != 0 && h > math.MaxInt/(4*w) {
+		panic("pix: image dimensions overflow")
+	}
+	if w == 0 || h == 0 {
+		return &Image{W: w, H: h}
 	}
 	return &Image{W: w, H: h, Pix: make([]float64, 4*w*h)}
 }
@@ -69,14 +79,34 @@ func FromImage(src image.Image) *Image {
 
 // At returns the premultiplied components at (x, y).
 func (m *Image) At(x, y int) (r, g, b, a float64) {
-	i := 4 * (x + y*m.W)
+	i := m.offset(x, y)
 	return m.Pix[i], m.Pix[i+1], m.Pix[i+2], m.Pix[i+3]
 }
 
 // Set stores premultiplied components at (x, y).
 func (m *Image) Set(x, y int, r, g, b, a float64) {
-	i := 4 * (x + y*m.W)
+	i := m.offset(x, y)
 	m.Pix[i], m.Pix[i+1], m.Pix[i+2], m.Pix[i+3] = r, g, b, a
+}
+
+func (m *Image) offset(x, y int) int {
+	if x < 0 || x >= m.W || y < 0 || y >= m.H {
+		panic(fmt.Sprintf("pix: (%d,%d) out of bounds of %dx%d image", x, y, m.W, m.H))
+	}
+	return 4 * (x + y*m.W)
+}
+
+// Clamp restores the invariant in place and returns m:
+// A ← clamp(A,0,1); R,G,B ← clamp(v,0,A).
+func (m *Image) Clamp() *Image {
+	for p := 0; p < len(m.Pix); p += 4 {
+		a := min(max(m.Pix[p+3], 0), 1)
+		m.Pix[p+3] = a
+		for c := range 3 {
+			m.Pix[p+c] = min(max(m.Pix[p+c], 0), a)
+		}
+	}
+	return m
 }
 
 // Clone returns a deep copy.
@@ -99,7 +129,13 @@ func (m *Image) Channel(i int) []float64 {
 
 // SetChannel writes W*H values into channel i (0..3).
 func (m *Image) SetChannel(i int, v []float64) {
-	for p, x := range v[:m.W*m.H] {
+	if i < 0 || i > 3 {
+		panic(fmt.Sprintf("pix: channel %d out of range", i))
+	}
+	if len(v) != m.W*m.H {
+		panic(fmt.Sprintf("pix: SetChannel got %d values, want %d", len(v), m.W*m.H))
+	}
+	for p, x := range v {
 		m.Pix[4*p+i] = x
 	}
 }

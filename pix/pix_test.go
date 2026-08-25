@@ -127,3 +127,48 @@ func TestLinearize(t *testing.T) {
 		t.Fatalf("alpha 0: %v", z)
 	}
 }
+
+func mustPanic(t *testing.T, name string, f func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("%s did not panic", name)
+		}
+	}()
+	f()
+}
+
+func TestClamp(t *testing.T) {
+	m := New(1, 1)
+	m.Set(0, 0, 0.9, -0.1, 0.2, 0.5)
+	m.Clamp()
+	if r, g, b, a := m.At(0, 0); r != 0.5 || g != 0 || b != 0.2 || a != 0.5 {
+		t.Fatalf("got %v %v %v %v", r, g, b, a)
+	}
+	m.Set(0, 0, 2, 0, 0, 1.5)
+	if r, _, _, a := m.Clamp().At(0, 0); r != 1 || a != 1 {
+		t.Fatalf("got %v %v", r, a)
+	}
+}
+
+func TestValidation(t *testing.T) {
+	m := New(2, 2)
+	mustPanic(t, "At(2,0)", func() { m.At(2, 0) })
+	mustPanic(t, "At(0,2)", func() { m.At(0, 2) })
+	mustPanic(t, "At(-1,0)", func() { m.At(-1, 0) })
+	mustPanic(t, "Set(0,-1)", func() { m.Set(0, -1, 0, 0, 0, 0) })
+	mustPanic(t, "SetChannel(4)", func() { m.SetChannel(4, make([]float64, 4)) })
+	mustPanic(t, "SetChannel short", func() { m.SetChannel(0, make([]float64, 3)) })
+	mustPanic(t, "SetChannel long", func() { m.SetChannel(0, make([]float64, 5)) })
+	for _, v := range m.Pix {
+		if v != 0 {
+			t.Fatal("SetChannel wrote before validating")
+		}
+	}
+	mustPanic(t, "New(-1,1)", func() { New(-1, 1) })
+	mustPanic(t, "New(1,-1)", func() { New(1, -1) })
+	mustPanic(t, "New overflow", func() { New(1<<40, 1<<40) })
+	if e := New(0, 5); e.Pix != nil || e.H != 5 {
+		t.Fatalf("New(0,5) = %+v", e)
+	}
+}
