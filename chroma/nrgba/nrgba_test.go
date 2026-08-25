@@ -103,3 +103,16 @@ func TestBlend(t *testing.T) {
 		}
 	}
 }
+
+func TestMixEndpoints(t *testing.T) {
+	a, b := color.NRGBA{10, 20, 30, 40}, color.NRGBA{200, 210, 220, 230}
+	if got := Mix(a, b, 255); got != a {
+		t.Errorf("Mix(a, b, 255) = %v, want %v", got, a)
+	}
+	if got := Mix(a, b, 0); got != b {
+		t.Errorf("Mix(a, b, 0) = %v, want %v", got, b)
+	}
+	if got := Mix(a, a, 127); got != a {
+		t.Errorf("Mix(a, a, 127) = %v, want %v", got, a)
+	}
+}

@@ -28,16 +28,13 @@ func Lerp(a, b color.NRGBA, p float32) color.NRGBA {
 	return color.NRGBA{R: mix(a.R, b.R), G: mix(a.G, b.G), B: mix(a.B, b.B), A: mix(a.A, b.A)}
 }
 
-// Mix mixes a and b weighted by t/256 and (1 - t/256) respectively.
-// t = 255 gives 255/256 of a, never exactly a; use Lerp for exact endpoints.
+// Mix mixes a and b weighted by t/255 and (1 - t/255) respectively, rounding
+// to nearest, so t = 255 returns a and t = 0 returns b exactly.
 func Mix(a, b color.NRGBA, t uint8) color.NRGBA {
-	ti := int(t)
-	return color.NRGBA{
-		R: byte((int(a.R)*ti + int(b.R)*(256-ti)) / 256),
-		G: byte((int(a.G)*ti + int(b.G)*(256-ti)) / 256),
-		B: byte((int(a.B)*ti + int(b.B)*(256-ti)) / 256),
-		A: byte((int(a.A)*ti + int(b.A)*(256-ti)) / 256),
+	mix := func(x, y uint8) uint8 {
+		return uint8((int(x)*int(t) + int(y)*(255-int(t)) + 127) / 255)
 	}
+	return color.NRGBA{R: mix(a.R, b.R), G: mix(a.G, b.G), B: mix(a.B, b.B), A: mix(a.A, b.A)}
 }
 
 // MulAlpha multiplies the color's alpha by alpha/255.
