@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/loov/imago/chroma"
+	"github.com/loov/imago/dither"
 	"github.com/loov/imago/pix"
 )
 
@@ -22,11 +23,23 @@ const (
 	maxIterations    = 1000
 )
 
-// Resize downscales src to width x height and quantizes it to at most colors
-// colors, jointly. Width and height must be positive and no larger than src;
-// colors must be at least 1. src is read as sRGB-encoded straight color;
-// alpha is ignored and the palette is opaque.
-func Resize(src *pix.Image, width, height, colors int) (*image.Paletted, error) {
+// Options tunes Resize.
+type Options struct {
+	// Colors is the palette size; at least 1.
+	Colors int
+	// Dither in 0..1 enables ordered (Bayer 4x4) dithering between each
+	// pixel's two nearest palette colors, weighted by how far the pixel's
+	// color sits between them. 0 is the paper's hard assignment; 1 is full
+	// strength.
+	Dither float64
+}
+
+// Resize downscales src to width x height and quantizes it to at most
+// opts.Colors colors, jointly. Width and height must be positive and no
+// larger than src. src is read as sRGB-encoded straight color; alpha is
+// ignored and the palette is opaque.
+func Resize(src *pix.Image, width, height int, opts Options) (*image.Paletted, error) {
+	colors := opts.Colors
 	if src == nil || src.W == 0 || src.H == 0 {
 		return nil, errors.New("pixelate: empty image")
 	}
@@ -95,6 +108,7 @@ func Resize(src *pix.Image, width, height, colors int) (*image.Paletted, error) 
 	// Each superpixel takes the most likely palette color.
 	dst := image.NewPaletted(image.Rect(0, 0, width, height), make(color.Palette, 0, len(pairs)))
 	pairColor := make([]int, len(pal))
+	labPalette := make([]chroma.Lab, 0, len(pairs))
 	for i, pr := range pairs {
 		c := pal[pr[0]].c
 		if pal[pr[1]].p > 0 || pal[pr[0]].p > 0 {
@@ -107,17 +121,52 @@ func Resize(src *pix.Image, width, height, colors int) (*image.Paletted, error) 
 		}
 		r, g, b := chroma.SRGBFromRGB(chroma.RGBFromXYZ(c.XYZ())).Clamp().To8()
 		dst.Palette = append(dst.Palette, color.NRGBA{r, g, b, 255})
+		labPalette = append(labPalette, c)
 		pairColor[pr[0]], pairColor[pr[1]] = i, i
 	}
 	k := len(pal)
+	perColor := make([]float64, len(pairs))
+	matrix := dither.Bayer(4)
 	for s := range sp {
+		clear(perColor)
+		for j := range k {
+			perColor[pairColor[j]] += prob[s*k+j]
+		}
 		best := 0
-		for j := 1; j < k; j++ {
-			if prob[s*k+j] > prob[s*k+best] {
-				best = j
+		for i := 1; i < len(perColor); i++ {
+			if perColor[i] > perColor[best] {
+				best = i
 			}
 		}
-		dst.Pix[s] = uint8(pairColor[best])
+		if opts.Dither > 0 && len(labPalette) > 1 {
+			// Dither between the two nearest palette colors by how far the
+			// superpixel sits between them.
+			c := sp[s].smooth
+			near, far := best, -1
+			dNear := c.Distance(labPalette[best])
+			dFar := math.Inf(1)
+			for i, pc := range labPalette {
+				if i == best {
+					continue
+				}
+				if d := c.Distance(pc); d < dNear {
+					far, dFar, near, dNear = near, dNear, i, d
+				} else if d < dFar {
+					far, dFar = i, d
+				}
+			}
+			// Position of c along the segment near->far: 0 at near, 0.5 halfway.
+			// Beyond near it is negative and nothing flips.
+			a, b := labPalette[near], labPalette[far]
+			dl, da, db := b.L-a.L, b.A-a.A, b.B-a.B
+			t := ((c.L-a.L)*dl + (c.A-a.A)*da + (c.B-a.B)*db) / (dl*dl + da*da + db*db)
+			x, y := s%width, s/width
+			if t*opts.Dither > float64(matrix[y%len(matrix)][x%len(matrix)]) {
+				near = far
+			}
+			best = near
+		}
+		dst.Pix[s] = uint8(best)
 	}
 	return dst, nil
 }

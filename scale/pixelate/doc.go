@@ -8,7 +8,11 @@
 // annealing in CIELAB, so the palette is chosen for what survives at the
 // target size rather than for the source.
 //
-//	dst, err := pixelate.Resize(pix.FromImage(src), 64, 64, 16)
+//	dst, err := pixelate.Resize(pix.FromImage(src), 64, 64, pixelate.Options{Colors: 16})
+//
+// Options.Dither adds ordered dithering on top, between each pixel's two
+// nearest palette colors. Pixels close to a palette color stay flat. The
+// paper has no such step.
 //
 // Like scale/contentadaptive this reads src as sRGB-encoded (do not
 // Linearize first). Output is an *image.Paletted with an opaque palette;

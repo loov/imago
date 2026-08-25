@@ -18,7 +18,7 @@ func Ordered(src *image.NRGBA, p color.Palette, size int, strength float32) *ima
 	if len(p) == 0 {
 		return dst
 	}
-	m := bayer(size)
+	m := Bayer(size)
 	n := len(m)
 	// Spread is the color step the dither covers: with k palette levels per
 	// channel a full pattern spans roughly 255/(k^(1/3)). Use the palette
@@ -41,9 +41,9 @@ func Ordered(src *image.NRGBA, p color.Palette, size int, strength float32) *ima
 	return dst
 }
 
-// bayer returns the normalized n×n Bayer matrix with entries in (0, 1),
-// for n the smallest power of two >= size (at least 2).
-func bayer(size int) [][]float32 {
+// Bayer returns the normalized n×n Bayer threshold matrix with entries in
+// (0, 1), for n the smallest power of two >= size (at least 2).
+func Bayer(size int) [][]float32 {
 	n := 2
 	if size > 2 {
 		n = 1 << bits.Len(uint(size-1))

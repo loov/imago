@@ -21,7 +21,7 @@ func TestResize(t *testing.T) {
 			src.SetNRGBA(x, y, c)
 		}
 	}
-	dst, err := Resize(pix.FromImage(src), 8, 4, 2)
+	dst, err := Resize(pix.FromImage(src), 8, 4, Options{Colors: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,8 +41,47 @@ func TestResize(t *testing.T) {
 	}
 
 	for _, bad := range [][3]int{{0, 4, 2}, {8, 0, 2}, {65, 4, 2}, {8, 33, 2}, {8, 4, 0}} {
-		if _, err := Resize(pix.FromImage(src), bad[0], bad[1], bad[2]); err == nil {
+		if _, err := Resize(pix.FromImage(src), bad[0], bad[1], Options{Colors: bad[2]}); err == nil {
 			t.Errorf("Resize(%v) returned no error", bad)
 		}
+	}
+}
+
+func TestDither(t *testing.T) {
+	// A horizontal gradient with two colors: the middle should get mixed, the
+	// ends should stay flat.
+	src := image.NewNRGBA(image.Rect(0, 0, 128, 16))
+	for y := range 16 {
+		for x := range 128 {
+			v := uint8(x * 2)
+			src.SetNRGBA(x, y, color.NRGBA{v, v, v, 255})
+		}
+	}
+	dst, err := Resize(pix.FromImage(src), 32, 4, Options{Colors: 2, Dither: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dst.Palette) != 2 {
+		t.Fatalf("palette %v", dst.Palette)
+	}
+	left, right := dst.Pix[0], dst.Pix[31]
+	if left == right {
+		t.Fatalf("ends share color %d", left)
+	}
+	for x := range 4 {
+		for y := range 4 {
+			if dst.Pix[x+y*32] != left || dst.Pix[31-x+y*32] != right {
+				t.Errorf("ends dithered: column %d", x)
+			}
+		}
+	}
+	var mixed bool
+	for y := range 4 {
+		if dst.Pix[15+y*32] != dst.Pix[16+y*32] || dst.Pix[15+y*32] != dst.Pix[15+((y+1)%4)*32] {
+			mixed = true
+		}
+	}
+	if !mixed {
+		t.Error("middle is not dithered")
 	}
 }

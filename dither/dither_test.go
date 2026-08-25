@@ -7,7 +7,7 @@ import (
 )
 
 func TestBayer(t *testing.T) {
-	m := bayer(4)
+	m := Bayer(4)
 	if len(m) != 4 {
 		t.Fatalf("size %d", len(m))
 	}
@@ -22,7 +22,7 @@ func TestBayer(t *testing.T) {
 			seen[k] = true
 		}
 	}
-	if len(bayer(5)) != 8 || len(bayer(1)) != 2 {
+	if len(Bayer(5)) != 8 || len(Bayer(1)) != 2 {
 		t.Error("size rounding")
 	}
 }
