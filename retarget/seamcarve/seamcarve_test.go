@@ -3,6 +3,7 @@ package seamcarve
 import (
 	"image"
 	"image/color"
+	"math/rand"
 	"testing"
 )
 
@@ -126,6 +127,22 @@ func TestResize(t *testing.T) {
 			t.Fatal(err)
 		}
 		hasBlackColumn(t, dst, true)
+	})
+
+	t.Run("keeps an opaque column in a transparent field", func(t *testing.T) {
+		src := image.NewNRGBA(image.Rect(0, 0, 6, 3))
+		rnd := rand.New(rand.NewSource(1))
+		for y := range 3 {
+			for x := range 6 {
+				src.SetNRGBA(x, y, color.NRGBA{R: uint8(rnd.Intn(256)), G: uint8(rnd.Intn(256)), B: uint8(rnd.Intn(256))})
+			}
+			src.SetNRGBA(3, y, black)
+		}
+		dst, err := Resize(src, 5, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasBlackColumn(t, dst, false)
 	})
 
 	t.Run("removes both a column and a row", func(t *testing.T) {

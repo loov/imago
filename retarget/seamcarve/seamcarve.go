@@ -54,8 +54,11 @@ func removeSeam(pix []color.NRGBA, w, h int) []color.NRGBA {
 	at := func(x, y int) color.NRGBA {
 		return pix[min(max(x, 0), w-1)+min(max(y, 0), h-1)*w]
 	}
+	// Alpha counts as detail: compare premultiplied color plus alpha, so fully
+	// transparent pixels are equal regardless of their hidden RGB.
 	diff := func(a, b color.NRGBA) int {
-		return abs(int(a.R)-int(b.R)) + abs(int(a.G)-int(b.G)) + abs(int(a.B)-int(b.B))
+		pa, pb := premul(a), premul(b)
+		return abs(pa[0]-pb[0]) + abs(pa[1]-pb[1]) + abs(pa[2]-pb[2]) + abs(pa[3]-pb[3])
 	}
 
 	// Cumulative minimum energy (e1) and the parent column for backtracking.
@@ -117,4 +120,9 @@ func abs(v int) int {
 		return -v
 	}
 	return v
+}
+
+func premul(c color.NRGBA) [4]int {
+	a := int(c.A)
+	return [4]int{int(c.R) * a / 255, int(c.G) * a / 255, int(c.B) * a / 255, a}
 }
