@@ -129,4 +129,52 @@ func TestResize(t *testing.T) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
 	})
+
+	t.Run("alpha-only detail is preserved", func(t *testing.T) {
+		src := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+		src.SetNRGBA(1, 2, color.NRGBA{A: 255})
+
+		dst, err := resize(src, 1, 1, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := dst.NRGBAAt(0, 0); got.A <= uint8(math.Round(255.0/16)) {
+			t.Fatalf("got alpha %d, want greater than box average %d", got.A, uint8(math.Round(255.0/16)))
+		}
+	})
+}
+
+func TestSmoothGuide(t *testing.T) {
+	impulse := func(w, h, x, y int) [][4]float64 {
+		box := make([][4]float64, w*h)
+		box[x+y*w] = [4]float64{1, 1, 1, 1}
+		return box
+	}
+	check := func(t *testing.T, box [][4]float64, w, h int, want map[[2]int]float64) {
+		t.Helper()
+		for y := range h {
+			for x := range w {
+				if got := smoothGuide(box, x, y, w, h)[0]; math.Abs(got-want[[2]int{x, y}]) > 1e-12 {
+					t.Fatalf("guide(%d, %d) = %v, want %v", x, y, got, want[[2]int{x, y}])
+				}
+			}
+		}
+	}
+
+	t.Run("interior kernel", func(t *testing.T) {
+		// 5x5 so the 3x3 neighborhood of the center is fully interior.
+		want := map[[2]int]float64{}
+		for dy := -1; dy <= 1; dy++ {
+			for dx := -1; dx <= 1; dx++ {
+				want[[2]int{2 + dx, 2 + dy}] = float64((2-dx*dx)*(2-dy*dy)) / 16
+			}
+		}
+		check(t, impulse(5, 5, 2, 2), 5, 5, want)
+	})
+
+	t.Run("corner renormalizes", func(t *testing.T) {
+		check(t, impulse(2, 2, 0, 0), 2, 2, map[[2]int]float64{
+			{0, 0}: 4.0 / 9, {1, 0}: 2.0 / 9, {0, 1}: 2.0 / 9, {1, 1}: 1.0 / 9,
+		})
+	})
 }

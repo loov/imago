@@ -13,10 +13,13 @@ import (
 // (SIGGRAPH Asia 2016). See https://doi.org/10.1145/2980179.2980239.
 //
 // Each output pixel is a weighted average of its source region, where a
-// source pixel's weight is (‖I(p) − Ĩ(q)‖/√3)^lambda with Ĩ the box-downscaled
-// image smoothed over its 3x3 neighborhood; pixels differing from the local
-// average contribute more. lambda=0 reduces exactly to box averaging, the
-// paper's default is 1.0. Width and height must be positive and no larger
+// source pixel's weight is (‖I(p) − Ĩ(q)‖/2)^lambda, the distance taken over
+// the four premultiplied channels (R, G, B, A) so an opacity-only edge counts
+// as detail. Ĩ is the box-downscaled image smoothed with the paper's kernel
+// [1 2 1; 2 4 2; 1 2 1]/16 (Eq. 1); at borders the out-of-range taps are
+// dropped and the remaining weights renormalized. Pixels differing from the
+// local average contribute more. lambda=0 reduces exactly to box averaging,
+// the paper's default is 1.0. Width and height must be positive and no larger
 // than src in either dimension.
 func Resize(src *pix.Image, width, height int, lambda float64) (*pix.Image, error) {
 	if src == nil || src.W == 0 || src.H == 0 {
@@ -55,22 +58,17 @@ func Resize(src *pix.Image, width, height int, lambda float64) (*pix.Image, erro
 	out := pix.New(width, height)
 	for y := range height {
 		for x := range width {
-			// Smoothed guidance: 3x3 average of box, clamped at edges.
-			var guide [4]float64
-			for yy := y - 1; yy <= y+1; yy++ {
-				for xx := x - 1; xx <= x+1; xx++ {
-					g := box[min(max(xx, 0), width-1)+min(max(yy, 0), height-1)*width]
-					for i := range guide {
-						guide[i] += g[i] / 9
-					}
-				}
-			}
+			guide := smoothGuide(box, x, y, width, height)
 
 			var sum [4]float64
 			var total float64
 			forRegion(x, y, width, height, inputWidth, inputHeight, func(p [4]float64, cover float64) {
-				dr, dg, db := p[0]-guide[0], p[1]-guide[1], p[2]-guide[2]
-				w := cover * math.Pow(math.Sqrt((dr*dr+dg*dg+db*db)/3), lambda)
+				var d2 float64
+				for i := range p {
+					d := p[i] - guide[i]
+					d2 += d * d
+				}
+				w := cover * math.Pow(math.Sqrt(d2/4), lambda)
 				for i := range sum {
 					sum[i] += w * p[i]
 				}
@@ -85,6 +83,31 @@ func Resize(src *pix.Image, width, height int, lambda float64) (*pix.Image, erro
 		}
 	}
 	return out, nil
+}
+
+// smoothGuide smooths box at (x, y) with the kernel [1 2 1; 2 4 2; 1 2 1]/16,
+// omitting out-of-range taps and renormalizing the remaining weights.
+func smoothGuide(box [][4]float64, x, y, width, height int) [4]float64 {
+	var guide [4]float64
+	var total float64
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			xx, yy := x+dx, y+dy
+			if xx < 0 || yy < 0 || xx >= width || yy >= height {
+				continue
+			}
+			w := float64((2 - dx*dx) * (2 - dy*dy))
+			g := box[xx+yy*width]
+			for i := range guide {
+				guide[i] += w * g[i]
+			}
+			total += w
+		}
+	}
+	for i := range guide {
+		guide[i] /= total
+	}
+	return guide
 }
 
 // forRegion calls fn for every input pixel overlapping output pixel (x, y)
