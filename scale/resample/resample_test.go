@@ -193,3 +193,9 @@ func BenchmarkResize_Tall(b *testing.B) {
 		}
 	}
 }
+
+func TestResize_RejectsHugeDimensions(t *testing.T) {
+	if _, err := Resize(pix.New(1, 1), 1<<40, 1<<40, Lanczos3); err == nil {
+		t.Fatal("expected error for overflowing dimensions")
+	}
+}

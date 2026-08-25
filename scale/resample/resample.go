@@ -63,6 +63,9 @@ func Resize(src *pix.Image, width, height int, f Filter) (*pix.Image, error) {
 	if width <= 0 || height <= 0 {
 		return nil, errors.New("resample: output dimensions must be positive")
 	}
+	if width > math.MaxInt/(4*height) || width > math.MaxInt/(4*src.H) || src.W > math.MaxInt/(4*height) {
+		return nil, errors.New("resample: output dimensions too large")
+	}
 	if f.Weight == nil || !(f.Support > 0) || math.IsInf(f.Support, 0) {
 		return nil, errors.New("resample: invalid filter")
 	}
