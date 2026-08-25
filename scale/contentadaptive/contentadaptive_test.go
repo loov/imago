@@ -1,6 +1,9 @@
 package contentadaptive
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"image"
 	"image/color"
 	"math"
@@ -183,5 +186,47 @@ func TestResize_TransparentPixelsDoNotBleedColor(t *testing.T) {
 	if channelDifference(got.R, want.R) > 1 || channelDifference(got.G, want.G) > 1 ||
 		channelDifference(got.B, want.B) > 1 || channelDifference(got.A, want.A) > 1 {
 		t.Fatalf("got %v, want ~%v", got, want)
+	}
+}
+
+// gradientEdge builds a horizontal gradient with a vertical hard edge at 2/3 width.
+func gradientEdge(w, h int) *pix.Image {
+	m := pix.New(w, h)
+	for y := range h {
+		for x := range w {
+			v := float64(x) / float64(w-1)
+			if x > 2*w/3 {
+				v = 1 - v
+			}
+			i := 4 * (x + y*w)
+			m.Pix[i], m.Pix[i+1], m.Pix[i+2], m.Pix[i+3] = v, v*0.5, 1-v, 1
+		}
+	}
+	return m
+}
+
+// Golden computed with the pre-refactor implementation; the buffer refactor must be bit-for-bit.
+func TestResize_Golden(t *testing.T) {
+	dst, err := Resize(gradientEdge(64, 48), 16, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha256.New()
+	if err := binary.Write(h, binary.LittleEndian, dst.Pix); err != nil {
+		t.Fatal(err)
+	}
+	const want = "36caac361605d872d6ae77e4205e0e6d244f1706382a30bd6949030d32f118aa"
+	if got := hex.EncodeToString(h.Sum(nil)); got != want {
+		t.Fatalf("output hash = %s, want %s", got, want)
+	}
+}
+
+func BenchmarkResize_1080p(b *testing.B) {
+	src := gradientEdge(1920, 1080)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Resize(src, 960, 540); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

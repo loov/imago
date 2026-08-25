@@ -49,7 +49,19 @@ type kernel struct {
 	color                  lab
 	alpha, sigma           float64
 	x0, y0, x1, y1, stride int
-	gamma                  []float64
+	gamma                  []float64 // window into the shared per-Resize buffer
+}
+
+// state is the subset of kernel that convergence is measured on.
+type state struct {
+	meanX, meanY        float64
+	covXX, covXY, covYY float64
+	color               lab
+	alpha, sigma        float64
+}
+
+func (k *kernel) state() state {
+	return state{k.meanX, k.meanY, k.covXX, k.covXY, k.covYY, k.color, k.alpha, k.sigma}
 }
 
 // Resize downsizes src using the constrained bilateral-kernel method from
@@ -59,6 +71,11 @@ type kernel struct {
 //
 // Spatial quantities (pixel positions, kernel means, covariances) are in input
 // pixel units; the covariance clamp is applied in normalized output-pixel units.
+//
+// Unlike the other scale packages, Resize interprets src as sRGB-encoded: it
+// decodes to CIELAB, runs there, and re-encodes sRGB on output. Do not wrap it
+// in Linearize/Delinearize. A same-size call returns a clone without the Lab
+// round trip.
 func Resize(src *pix.Image, width, height int) (*pix.Image, error) {
 	if src == nil || src.W == 0 || src.H == 0 {
 		return nil, errors.New("contentadaptive: empty image")
@@ -77,12 +94,13 @@ func Resize(src *pix.Image, width, height int) (*pix.Image, error) {
 	kernels := initializeKernels(inputWidth, inputHeight, width, height, rx, ry)
 	pixelMax := make([]float64, len(pixels))
 	pixelSum := make([]float64, len(pixels))
+	previous := make([]state, len(kernels))
+	neighborMeans := make([][2]float64, len(kernels))
 
 	for range maxIterations {
-		previous := append([]kernel(nil), kernels...)
 		expectation(kernels, pixels, inputWidth, pixelMax, pixelSum)
-		maximize(kernels, pixels, inputWidth)
-		correct(kernels, inputWidth, inputHeight, width, height, rx, ry)
+		maximize(kernels, pixels, inputWidth, previous)
+		correct(kernels, inputWidth, inputHeight, width, height, rx, ry, neighborMeans)
 		if converged(previous, kernels) {
 			break
 		}
@@ -107,6 +125,8 @@ func readPixels(m *pix.Image) []pixel {
 
 func initializeKernels(inputWidth, inputHeight, width, height int, rx, ry float64) []kernel {
 	kernels := make([]kernel, width*height)
+	// Supports are bounded by (4rx+1)(4ry+1), so one backing slice holds every gamma.
+	gamma := make([]float64, 0, width*height*(int(4*rx)+1)*(int(4*ry)+1))
 	for y := range height {
 		for x := range width {
 			// Deviates from pseudocode line 20/table: pixel centers are at x+½ so
@@ -118,6 +138,8 @@ func initializeKernels(inputWidth, inputHeight, width, height int, rx, ry float6
 			x1 := min(inputWidth, int(math.Ceil(centerX+2*rx)))
 			y1 := min(inputHeight, int(math.Ceil(centerY+2*ry)))
 			stride := x1 - x0
+			n := stride * (y1 - y0)
+			gamma = gamma[:len(gamma)+n]
 			kernels[x+y*width] = kernel{
 				gridX: x, gridY: y,
 				centerX: centerX, centerY: centerY,
@@ -125,7 +147,7 @@ func initializeKernels(inputWidth, inputHeight, width, height int, rx, ry float6
 				covXX: rx * rx / 9, covYY: ry * ry / 9,
 				color: lab{l: 0.5, a: 0.5, b: 0.5}, alpha: 0.5, sigma: initialColorSigma,
 				x0: x0, y0: y0, x1: x1, y1: y1, stride: stride,
-				gamma: make([]float64, stride*(y1-y0)),
+				gamma: gamma[len(gamma)-n : len(gamma) : len(gamma)],
 			}
 		}
 	}
@@ -196,9 +218,12 @@ func expectation(kernels []kernel, pixels []pixel, inputWidth int, pixelMax, pix
 	}
 }
 
-func maximize(kernels []kernel, pixels []pixel, inputWidth int) {
+// maximize updates each kernel's parameters, saving the pre-update state into
+// previous so convergence can be measured after correct.
+func maximize(kernels []kernel, pixels []pixel, inputWidth int, previous []state) {
 	for ki := range kernels {
 		k := &kernels[ki]
+		previous[ki] = k.state()
 		var weight, meanX, meanY, xx, xy, yy, l, a, b, alpha, colorWeight float64
 		for y := k.y0; y < k.y1; y++ {
 			for x := k.x0; x < k.x1; x++ {
@@ -235,8 +260,7 @@ func maximize(kernels []kernel, pixels []pixel, inputWidth int) {
 	}
 }
 
-func correct(kernels []kernel, inputWidth, inputHeight, width, height int, rx, ry float64) {
-	neighborMeans := make([][2]float64, len(kernels))
+func correct(kernels []kernel, inputWidth, inputHeight, width, height int, rx, ry float64, neighborMeans [][2]float64) {
 	for i, k := range kernels {
 		var x, y float64
 		count := 0
@@ -377,9 +401,9 @@ func edgeOrientation(k, n *kernel, width, height int) (float64, float64) {
 	return ox, oy
 }
 
-func converged(previous, kernels []kernel) bool {
-	for i, k := range kernels {
-		p := previous[i]
+func converged(previous []state, kernels []kernel) bool {
+	for i := range kernels {
+		k, p := kernels[i].state(), previous[i]
 		if math.Abs(k.meanX-p.meanX) > convergenceEpsilon ||
 			math.Abs(k.meanY-p.meanY) > convergenceEpsilon ||
 			math.Abs(k.covXX-p.covXX) > convergenceEpsilon ||

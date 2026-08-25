@@ -18,7 +18,8 @@ representation it actually computes on and returns the same.
 
 - Float algorithms (`scale/*`, `metric/ssim`) take `*pix.Image`, premultiplied
   RGBA in whatever encoding you give them. Wrap with `(*pix.Image).Linearize` /
-  `Delinearize` to filter in linear light.
+  `Delinearize` to filter in linear light. Exception: `scale/contentadaptive`
+  interprets its input as sRGB (it works in CIELAB) — pass encoded values.
 - Exact 8-bit algorithms (`pixelart`, `retarget/seamcarve`, `enhance/sketch`)
   take `*image.NRGBA`.
 
