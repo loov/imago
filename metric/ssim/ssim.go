@@ -41,6 +41,7 @@ func SSIM(a, b *pix.Image) (float64, error) {
 // MSSSIM returns the multi-scale structural similarity index of a and b
 // following Wang, Simoncelli, Bovik 2003, https://doi.org/10.1109/ACSSC.2003.1292216.
 // It uses 5 scales, so both images must have the same size, at least 176x176.
+// Negative contrast-structure terms are clamped to zero, so the result is in [0, 1].
 func MSSSIM(a, b *pix.Image) (float64, error) {
 	la, lb, w, h, err := lumas(a, b)
 	if err != nil {
@@ -53,11 +54,14 @@ func MSSSIM(a, b *pix.Image) (float64, error) {
 	for i, weight := range msWeights {
 		l, cs, _ := terms(la, lb, w, h)
 		if i == len(msWeights)-1 {
-			result *= math.Pow(l, weight)
+			result *= math.Pow(max(l, 0), weight)
 		} else {
 			la, lb, w, h = halve(la, w, h), halve(lb, w, h), w/2, h/2
 		}
-		result *= math.Pow(cs, weight)
+		result *= math.Pow(max(cs, 0), weight)
+	}
+	if math.IsNaN(result) {
+		return 0, errors.New("ssim: non-finite result")
 	}
 	return result, nil
 }

@@ -46,6 +46,17 @@ func noisy(src *pix.Image, amplitude int) *pix.Image {
 	return dst
 }
 
+func checkerboard(w, h, cell int) *pix.Image {
+	img := pix.New(w, h)
+	for y := range h {
+		for x := range w {
+			v := float64((x/cell + y/cell) % 2)
+			img.Set(x, y, v, v, v, 1)
+		}
+	}
+	return img
+}
+
 func inverted(src *pix.Image) *pix.Image {
 	dst := src.Clone()
 	for i := range src.Pix {
@@ -124,6 +135,18 @@ func TestMSSSIM(t *testing.T) {
 		}
 		if _, err := MSSSIM(img, small); err == nil {
 			t.Fatal("size mismatch: no error")
+		}
+	})
+
+	t.Run("checkerboard vs inverse", func(t *testing.T) {
+		board := checkerboard(192, 192, 8)
+		got, err := MSSSIM(board, inverted(board))
+		if err != nil || math.IsNaN(got) || got < 0 || got > 1 {
+			t.Fatalf("MSSSIM = %v, %v; want in [0, 1]", got, err)
+		}
+		got, err = SSIM(board, inverted(board))
+		if err != nil || math.IsNaN(got) || got >= 0.2 {
+			t.Fatalf("SSIM = %v, %v; want finite < 0.2", got, err)
 		}
 	})
 
