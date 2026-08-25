@@ -34,7 +34,7 @@ func SSIM(a, b *pix.Image) (float64, error) {
 	if w < windowSize || h < windowSize {
 		return 0, errors.New("ssim: image smaller than 11x11")
 	}
-	_, _, s := terms(la, lb, w, h)
+	_, _, s := terms(la, lb, w, h, newScratch(w, h))
 	return s, nil
 }
 
@@ -50,13 +50,17 @@ func MSSSIM(a, b *pix.Image) (float64, error) {
 	if w>>(len(msWeights)-1) < windowSize || h>>(len(msWeights)-1) < windowSize {
 		return 0, errors.New("ssim: image smaller than 176x176")
 	}
+	scratch := newScratch(w, h)
 	result := 1.0
 	for i, weight := range msWeights {
-		l, cs, _ := terms(la, lb, w, h)
+		l, cs, _ := terms(la, lb, w, h, scratch)
 		if i == len(msWeights)-1 {
 			result *= math.Pow(max(l, 0), weight)
 		} else {
-			la, lb, w, h = halve(la, w, h), halve(lb, w, h), w/2, h/2
+			halve(la, w, h)
+			halve(lb, w, h)
+			w, h = w/2, h/2
+			la, lb = la[:w*h], lb[:w*h]
 		}
 		result *= math.Pow(max(cs, 0), weight)
 	}
@@ -88,33 +92,63 @@ func luma(src *pix.Image) []float64 {
 	return dst
 }
 
-// terms returns the means over the valid SSIM map of the luminance term,
-// the contrast-structure term, and their product (the SSIM index).
-func terms(a, b []float64, w, h int) (l, cs, s float64) {
-	ab := make([]float64, len(a))
-	aa := make([]float64, len(a))
-	bb := make([]float64, len(a))
-	for i := range a {
-		ab[i], aa[i], bb[i] = a[i]*b[i], a[i]*a[i], b[i]*b[i]
-	}
-	ma, mb := blur(a, w, h), blur(b, w, h)
-	mab, maa, mbb := blur(ab, w, h), blur(aa, w, h), blur(bb, w, h)
-	for i := range ma {
-		covAB := mab[i] - ma[i]*mb[i]
-		varA := maa[i] - ma[i]*ma[i]
-		varB := mbb[i] - mb[i]*mb[i]
-		li := (2*ma[i]*mb[i] + c1) / (ma[i]*ma[i] + mb[i]*mb[i] + c1)
-		csi := (2*covAB + c2) / (varA + varB + c2)
-		l, cs, s = l+li, cs+csi, s+li*csi
-	}
-	n := float64(len(ma))
-	return l / n, cs / n, s / n
+// newScratch allocates the horizontal-pass buffer for the five moments,
+// sized for the largest scale and reused by smaller ones.
+func newScratch(w, h int) []float64 {
+	return make([]float64, 5*(w-windowSize+1)*h)
 }
 
-// blur applies the separable 11x11 Gaussian window and returns the
-// (w-10)x(h-10) valid region.
-func blur(src []float64, w, h int) []float64 {
-	var kernel [windowSize]float64
+// terms returns the means over the valid SSIM map of the luminance term,
+// the contrast-structure term, and their product (the SSIM index).
+//
+// The five moments μa, μb, E[a²], E[b²], E[ab] are blurred with a separable
+// 11x11 Gaussian: the horizontal pass computes the products on the fly into
+// scratch (five interleaved moments per valid pixel, 5*vw*h), and the vertical pass accumulates the
+// means directly, so no moment or result planes are ever materialized.
+func terms(a, b []float64, w, h int, scratch []float64) (l, cs, s float64) {
+	kernel := gaussian()
+	vw, vh := w-windowSize+1, h-windowSize+1
+	tmp := scratch[:5*vw*h] // interleaved: tmp[5*i+m] is moment m at valid pixel i
+	for y := range h {
+		for x := range vw {
+			var v [5]float64
+			for k, kv := range kernel {
+				i := x + k + y*w
+				ai, bi := a[i], b[i]
+				v[0] += kv * ai
+				v[1] += kv * bi
+				v[2] += kv * ai * ai
+				v[3] += kv * bi * bi
+				v[4] += kv * ai * bi
+			}
+			copy(tmp[5*(x+y*vw):], v[:])
+		}
+	}
+	for y := range vh {
+		for x := range vw {
+			var v [5]float64
+			for k, kv := range kernel {
+				t := tmp[5*(x+(y+k)*vw):][:5]
+				v[0] += kv * t[0]
+				v[1] += kv * t[1]
+				v[2] += kv * t[2]
+				v[3] += kv * t[3]
+				v[4] += kv * t[4]
+			}
+			ma, mb, maa, mbb, mab := v[0], v[1], v[2], v[3], v[4]
+			covAB := mab - ma*mb
+			varA := maa - ma*ma
+			varB := mbb - mb*mb
+			li := (2*ma*mb + c1) / (ma*ma + mb*mb + c1)
+			csi := (2*covAB + c2) / (varA + varB + c2)
+			l, cs, s = l+li, cs+csi, s+li*csi
+		}
+	}
+	fn := float64(vw * vh)
+	return l / fn, cs / fn, s / fn
+}
+
+func gaussian() (kernel [windowSize]float64) {
 	sum := 0.0
 	for i := range kernel {
 		d := float64(i - windowSize/2)
@@ -124,40 +158,17 @@ func blur(src []float64, w, h int) []float64 {
 	for i := range kernel {
 		kernel[i] /= sum
 	}
-
-	vw, vh := w-windowSize+1, h-windowSize+1
-	tmp := make([]float64, vw*h) // horizontal pass
-	for y := range h {
-		for x := range vw {
-			v := 0.0
-			for k, kv := range kernel {
-				v += kv * src[x+k+y*w]
-			}
-			tmp[x+y*vw] = v
-		}
-	}
-	dst := make([]float64, vw*vh) // vertical pass
-	for y := range vh {
-		for x := range vw {
-			v := 0.0
-			for k, kv := range kernel {
-				v += kv * tmp[x+(y+k)*vw]
-			}
-			dst[x+y*vw] = v
-		}
-	}
-	return dst
+	return kernel
 }
 
-// halve downsamples by 2 with a 2x2 average, dropping any odd trailing row or column.
-func halve(src []float64, w, h int) []float64 {
+// halve downsamples in place by 2 with a 2x2 average, dropping any odd
+// trailing row or column. The result occupies the front (w/2)*(h/2) of src.
+func halve(src []float64, w, h int) {
 	hw, hh := w/2, h/2
-	dst := make([]float64, hw*hh)
 	for y := range hh {
 		for x := range hw {
 			i := 2*x + 2*y*w
-			dst[x+y*hw] = (src[i] + src[i+1] + src[i+w] + src[i+w+1]) / 4
+			src[x+y*hw] = (src[i] + src[i+1] + src[i+w] + src[i+w+1]) / 4
 		}
 	}
-	return dst
 }

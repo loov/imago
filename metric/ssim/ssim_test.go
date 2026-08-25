@@ -170,3 +170,23 @@ func TestMSSSIM(t *testing.T) {
 		}
 	})
 }
+
+func BenchmarkSSIM_1080p(b *testing.B) {
+	a, c := gradient(1920, 1080), noisy(gradient(1920, 1080), 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := SSIM(a, c); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMSSSIM_1080p(b *testing.B) {
+	a, c := gradient(1920, 1080), noisy(gradient(1920, 1080), 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := MSSSIM(a, c); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
