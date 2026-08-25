@@ -11,6 +11,7 @@ out := m.NRGBA()                           // un-premultiply, quantize
 Packages:
 
 - `scale/{box,resample,dpid,perceptual,l0,contentadaptive}` downscaling
+- `scale/pixelate` downscaling with a palette, `quant` palettes, `dither` ordered dithering
 - `pix` float image, `chroma` color spaces, `chroma/nrgba` color helpers
 - `filter`, `pixelart`, `retarget/seamcarve`, `metric/ssim`, `enhance/sketch`
 
