@@ -7,6 +7,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"math"
 
 	"github.com/loov/imago/filter"
 )
@@ -25,6 +26,8 @@ type Options struct {
 //  2. base = erode(LineWidth) then blur(LineWidth) of L, an estimate of the paper;
 //  3. L' = white + (L − base)·white/mean(base), clamped to 0..255,
 //     where white = Whiteness·255/100;
+//     If the paper estimate is all black (mean(base) == 0) L is left as is:
+//     a page with no light is left as is;
 //  4. unless KeepColor, Cb = Cr = 128 (desaturate).
 //
 // The result is a new *image.NRGBA with bounds (0,0)-(w,h); alpha is preserved.
@@ -42,10 +45,16 @@ func Clean(src *image.NRGBA, opts Options) (*image.NRGBA, error) {
 			m.SetNRGBA(x, y, src.NRGBAAt(src.Rect.Min.X+x, src.Rect.Min.Y+y))
 		}
 	}
+	if opts.Whiteness < 0 || math.IsNaN(opts.Whiteness) || math.IsInf(opts.Whiteness, 0) {
+		return nil, errors.New("sketch: invalid whiteness")
+	}
+	if opts.LineWidth < 0 {
+		return nil, errors.New("sketch: invalid line width")
+	}
 	if opts.Whiteness == 0 {
 		opts.Whiteness = 100
 	}
-	if opts.LineWidth <= 0 {
+	if opts.LineWidth == 0 {
 		opts.LineWidth = max(w/20, 1)
 	}
 
@@ -62,10 +71,12 @@ func Clean(src *image.NRGBA, opts Options) (*image.NRGBA, error) {
 	base.Blur(opts.LineWidth)
 
 	white := opts.Whiteness * 255.0 / 100.0
-	invspan := 1.0 / (base.Average() / white)
-	for i, lv := range L.Data {
-		r := int(white + (float64(lv)-float64(base.Data[i]))*invspan)
-		L.Data[i] = byte(min(max(r, 0), 0xFF))
+	if mean := base.Average(); mean > 0 {
+		invspan := white / mean
+		for i, lv := range L.Data {
+			r := int(white + (float64(lv)-float64(base.Data[i]))*invspan)
+			L.Data[i] = byte(min(max(r, 0), 0xFF))
+		}
 	}
 
 	for p := range w * h {

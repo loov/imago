@@ -3,6 +3,7 @@ package sketch
 import (
 	"image"
 	"image/color"
+	"math"
 	"testing"
 )
 
@@ -24,6 +25,28 @@ func TestReject(t *testing.T) {
 	}
 	if _, err := Clean(image.NewNRGBA(image.Rect(0, 0, 0, 5)), Options{}); err == nil {
 		t.Error("empty accepted")
+	}
+}
+
+func TestInvalidOptions(t *testing.T) {
+	src := page(4, 4, func(x, y int) color.NRGBA { return gray(200) })
+	for _, o := range []Options{{Whiteness: math.NaN()}, {Whiteness: -1}, {Whiteness: math.Inf(1)}, {LineWidth: -1}} {
+		if _, err := Clean(src, o); err == nil {
+			t.Errorf("%+v accepted", o)
+		}
+	}
+}
+
+func TestAllBlack(t *testing.T) {
+	src := page(8, 8, func(x, y int) color.NRGBA { return gray(0) })
+	out, err := Clean(src, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range out.Pix {
+		if i%4 != 3 && v != 0 {
+			t.Fatalf("Pix[%d] = %d, want 0", i, v)
+		}
 	}
 }
 
@@ -97,5 +120,16 @@ func TestColor(t *testing.T) {
 	r, g, b = out.Pix[0], out.Pix[1], out.Pix[2]
 	if r <= g || int(g)-int(b) > 1 || int(b)-int(g) > 1 {
 		t.Errorf("tint lost: %d %d %d", r, g, b)
+	}
+}
+
+func BenchmarkClean_4000x3000(b *testing.B) {
+	const w, h = 4000, 3000
+	src := page(w, h, func(x, y int) color.NRGBA { return gray(uint8(80 + 120*x/(w-1))) })
+	b.ResetTimer()
+	for range b.N {
+		if _, err := Clean(src, Options{}); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
