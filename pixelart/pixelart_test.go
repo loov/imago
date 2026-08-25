@@ -3,6 +3,7 @@ package pixelart
 import (
 	"image"
 	"image/color"
+	"math/rand"
 	"testing"
 )
 
@@ -159,5 +160,43 @@ func TestXBR2xDiagonalEdge(t *testing.T) {
 	}
 	if differ == 0 {
 		t.Fatal("XBR2x produced nearest-neighbor output")
+	}
+}
+
+func noise(rnd *rand.Rand) color.NRGBA {
+	return color.NRGBA{R: uint8(rnd.Intn(256)), G: uint8(rnd.Intn(256)), B: uint8(rnd.Intn(256))}
+}
+
+func TestXBR2xTransparentNoHalo(t *testing.T) {
+	edge := color.NRGBA{R: 200, G: 40, B: 90, A: 255}
+	rnd := rand.New(rand.NewSource(1))
+	src := fill(image.Rect(0, 0, 6, 6), func(x, y int) color.NRGBA {
+		if x+y < 6 {
+			return edge
+		}
+		return noise(rnd)
+	})
+	dst := XBR2x(src)
+	within := func(a, b uint8) bool { return int(a)-int(b) <= 1 && int(b)-int(a) <= 1 }
+	for y := range 12 {
+		for x := range 12 {
+			c := dst.NRGBAAt(x, y)
+			if c.A != 0 && !(within(c.R, edge.R) && within(c.G, edge.G) && within(c.B, edge.B)) {
+				t.Fatalf("pixel (%d, %d) = %v, colored halo", x, y, c)
+			}
+		}
+	}
+}
+
+func TestScale2xTransparentNoise(t *testing.T) {
+	rnd := rand.New(rand.NewSource(1))
+	src := fill(image.Rect(0, 0, 5, 5), func(x, y int) color.NRGBA { return noise(rnd) })
+	dst := Scale2x(src)
+	for y := range 10 {
+		for x := range 10 {
+			if got, want := dst.NRGBAAt(x, y), src.NRGBAAt(x/2, y/2); got != want || got.A != 0 {
+				t.Fatalf("pixel (%d, %d) = %v, want nearest-neighbor %v", x, y, got, want)
+			}
+		}
 	}
 }
