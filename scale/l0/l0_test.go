@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"math/rand"
 	"testing"
 
 	"github.com/loov/imago/pix"
@@ -195,5 +196,67 @@ func TestResizeConverges(t *testing.T) {
 	}
 	if iterations >= 8 {
 		t.Fatalf("uniform image took %d outer iterations", iterations)
+	}
+}
+
+func BenchmarkResize_1080p(b *testing.B) {
+	src := pix.New(1920, 1080)
+	for y := range 1080 {
+		for x := range 1920 {
+			src.Set(x, y, float64(x)/1920, float64(y)/1080, 0.5, 1)
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Resize(src, 480, 270, DefaultLambda); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// TestUpsamplerMatchesReference checks the separable tables against a
+// straightforward per-pixel bilinear evaluation of U and Uᵀ.
+func TestUpsamplerMatchesReference(t *testing.T) {
+	const iw, ih, w, h = 13, 7, 5, 3
+	rng := rand.New(rand.NewSource(1))
+	d := make([]float64, w*h)
+	for i := range d {
+		d[i] = rng.Float64()
+	}
+	input := make([]float64, iw*ih)
+	for i := range input {
+		input[i] = rng.Float64()
+	}
+	// Reference: Uᵀ(Ud − input) and column sums, computed per input pixel.
+	wantGrad, wantNorm := make([]float64, w*h), make([]float64, w*h)
+	for y := range ih {
+		sy := min(max((float64(y)+0.5)*h/ih-0.5, 0), float64(h-1))
+		y0 := int(sy)
+		y1 := min(y0+1, h-1)
+		fy := sy - float64(y0)
+		for x := range iw {
+			sx := min(max((float64(x)+0.5)*w/iw-0.5, 0), float64(w-1))
+			x0 := int(sx)
+			x1 := min(x0+1, w-1)
+			fx := sx - float64(x0)
+			idx := [4]int{x0 + y0*w, x1 + y0*w, x0 + y1*w, x1 + y1*w}
+			wt := [4]float64{(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy}
+			r := -input[x+y*iw]
+			for k := range 4 {
+				r += wt[k] * d[idx[k]]
+			}
+			for k := range 4 {
+				wantGrad[idx[k]] += wt[k] * r
+				wantNorm[idx[k]] += wt[k]
+			}
+		}
+	}
+	up := newUpsampler(iw, ih, w, h)
+	grad := make([]float64, w*h)
+	up.residualT(d, input, grad, w)
+	for i := range grad {
+		if math.Abs(grad[i]-wantGrad[i]) > 1e-12 || math.Abs(up.norm[i]-wantNorm[i]) > 1e-12 {
+			t.Fatalf("pixel %d: grad %v want %v, norm %v want %v", i, grad[i], wantGrad[i], up.norm[i], wantNorm[i])
+		}
 	}
 }
