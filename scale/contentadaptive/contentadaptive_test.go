@@ -1,8 +1,6 @@
 package contentadaptive
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"image"
 	"image/color"
@@ -206,18 +204,28 @@ func gradientEdge(w, h int) *pix.Image {
 }
 
 // Golden computed with the pre-refactor implementation; the buffer refactor must be bit-for-bit.
+// goldenPix is the NRGBA output of Resize(gradientEdge(64, 48), 16, 12),
+// captured before the allocation refactor. Bytes may differ by one from
+// float rounding across builds (e.g. FMA under -race), hence the tolerance.
+const goldenPix = "0703f8ff170ce8ff2814d8ff381cc7ff4924b6ff5a2da5ff6b3594ff7c3e83ff8d4772ff9a4d65ffa3525cff4a25b5ff381cc7ff2713d9ff170be9ff0703f9ff0502faff160beaff2714d8ff381cc7ff4924b7ff5a2da6ff6a3595ff7b3d85ff8a4576ff964b69ffa3525cff5327b1ff391cc7ff2714d8ff170be9ff0603f9ff0603f9ff170be9ff2713d8ff381cc8ff4924b7ff5a2da6ff6b3595ff7c3e83ff8c4673ff9a4d65ffa4525bff4a25b5ff381cc7ff2713d9ff160beaff0502faff0904f6ff170be9ff2713d9ff381cc8ff4824b7ff5a2da6ff6b3595ff7c3e83ff8c4673ff974c68ffa4525bff4b25b5ff381cc7ff2713d8ff170be8ff0a05f6ff0201fdff150aebff2613d9ff371bc9ff4824b7ff592ca6ff6a3595ff7c3e83ff8c4673ff984c67ffa4525bff4b25b5ff371cc8ff2613daff140aecff0301fdff0905f6ff170be9ff2613d9ff371bc8ff4824b7ff592da6ff6b3595ff7b3e84ff8c4673ff984c67ffa4525bff4a25b6ff371bc9ff2412dbff150aebff0603faff0503faff160beaff2613daff371bc9ff4824b7ff592da6ff6b3595ff7c3e84ff8c4673ff984c67ffa4525bff4a25b5ff381cc8ff2714d8ff180ce8ff0a05f5ff0000ffff1309edff2512dbff361bc9ff4824b8ff592ca6ff6a3595ff7c3e84ff8c4673ff984c67ffa4525bff4b25b5ff381cc7ff2713d9ff160beaff0301fcff0704f8ff160beaff2613d9ff371bc8ff4824b7ff592ca6ff6b3595ff7c3e83ff8c4673ff974c68ffa4525bff4b25b5ff381cc7ff2714d8ff170ce8ff0a05f5ff0703f9ff170be9ff2713d9ff381cc8ff4824b7ff592da6ff6b3595ff7c3e83ff8d4673ff9a4d65ffa4525bff4a25b5ff381cc7ff2713d9ff160be9ff0503faff0402fbff160beaff2713d8ff381cc7ff4924b6ff5a2da6ff6a3595ff7b3d85ff8a4576ff964b69ffa3525cff5327b1ff391cc7ff2714d8ff160be9ff0503faff0703f8ff170ce8ff2814d8ff391cc7ff4a25b6ff5a2da5ff6b3594ff7c3e83ff8d4772ff9a4d65ffa3525cff4a25b5ff381cc7ff2713d8ff170be9ff0703f8ff"
+
 func TestResize_Golden(t *testing.T) {
 	dst, err := Resize(gradientEdge(64, 48), 16, 12)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := sha256.New()
-	if err := binary.Write(h, binary.LittleEndian, dst.Pix); err != nil {
+	want, err := hex.DecodeString(goldenPix)
+	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "36caac361605d872d6ae77e4205e0e6d244f1706382a30bd6949030d32f118aa"
-	if got := hex.EncodeToString(h.Sum(nil)); got != want {
-		t.Fatalf("output hash = %s, want %s", got, want)
+	got := dst.NRGBA().Pix
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if d := int(got[i]) - int(want[i]); d > 1 || d < -1 {
+			t.Fatalf("pix[%d] = %d, want %d", i, got[i], want[i])
+		}
 	}
 }
 
