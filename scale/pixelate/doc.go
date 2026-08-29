@@ -10,6 +10,10 @@
 //
 //	dst, err := pixelate.Resize(pix.FromImage(src), 64, 64, pixelate.Options{Colors: 16})
 //
+// Options.Palette uses a given palette instead of building one; the
+// superpixels are still optimized, each then takes its nearest entry in
+// CIELAB.
+//
 // Options.Dither adds ordered dithering on top, between each pixel's two
 // nearest palette colors. Pixels close to a palette color stay flat. The
 // paper has no such step.

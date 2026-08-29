@@ -85,3 +85,23 @@ func TestDither(t *testing.T) {
 		t.Error("middle is not dithered")
 	}
 }
+
+func TestPalette(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 32, 32))
+	for i := range src.Pix {
+		src.Pix[i] = 255
+	}
+	pal := color.Palette{color.NRGBA{0, 0, 0, 255}, color.NRGBA{240, 240, 240, 255}, color.NRGBA{255, 0, 0, 255}}
+	dst, err := Resize(pix.FromImage(src), 4, 4, Options{Palette: pal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dst.Palette) != 3 || dst.Palette[1] != pal[1] {
+		t.Fatalf("palette %v", dst.Palette)
+	}
+	for i, p := range dst.Pix {
+		if p != 1 {
+			t.Errorf("pixel %d = %d, want 1", i, p)
+		}
+	}
+}
