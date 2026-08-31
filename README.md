@@ -1,6 +1,6 @@
 # imago
 
-Image algorithms and color math for Go, standard library only.
+Image algorithms and color math for Go. The library packages use only the standard library.
 
 ```go
 m := pix.FromImage(src)                    // premultiply into floats
@@ -16,5 +16,12 @@ Packages:
 - `filter`, `pixelart`, `retarget/seamcarve`, `metric/ssim`, `enhance/sketch`
 
 Each package documents its own usage and cites its paper.
+
+There is also a command line tool:
+
+```
+go install github.com/loov/imago/cmd/imago@latest
+imago resize dpid --width 64 input.png output.png
+```
 
 MIT licensed.
