@@ -3,6 +3,9 @@ package contentadaptive
 import (
 	"errors"
 	"math"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"github.com/loov/imago/chroma"
 	"github.com/loov/imago/pix"
@@ -91,13 +94,12 @@ func Resize(src *pix.Image, width, height int) (*pix.Image, error) {
 	rx := float64(inputWidth) / float64(width)
 	ry := float64(inputHeight) / float64(height)
 	kernels := initializeKernels(inputWidth, inputHeight, width, height, rx, ry)
-	pixelMax := make([]float64, len(pixels))
 	pixelSum := make([]float64, len(pixels))
 	previous := make([]state, len(kernels))
 	neighborMeans := make([][2]float64, len(kernels))
 
 	for range maxIterations {
-		expectation(kernels, pixels, inputWidth, pixelMax, pixelSum)
+		expectation(kernels, pixels, inputWidth, inputHeight, width, height, rx, ry, pixelSum)
 		maximize(kernels, pixels, inputWidth, previous)
 		correct(kernels, inputWidth, inputHeight, width, height, rx, ry, neighborMeans)
 		if converged(previous, kernels) {
@@ -155,177 +157,225 @@ func initializeKernels(inputWidth, inputHeight, width, height int, rx, ry float6
 
 // expectation computes γ: each kernel's weights are first normalized over its
 // own support (pseudocode lines 23–26), then per pixel across kernels (line 30).
-// Both normalizations run in the log domain since σ makes raw weights underflow.
-func expectation(kernels []kernel, pixels []pixel, inputWidth int, pixelMax, pixelSum []float64) {
-	for i := range pixelMax {
-		pixelMax[i] = math.Inf(-1)
-		pixelSum[i] = 0
-	}
+// Both passes work in the log domain since σ makes raw weights underflow: a
+// pixel's weights can all underflow linearly and must still normalize to a
+// sum of 1 across the kernels covering it. The per-pixel pass converts to
+// linear in place, so the final pass is a plain division.
+func expectation(kernels []kernel, pixels []pixel, inputWidth, inputHeight, width, height int, rx, ry float64, pixelSum []float64) {
+	parallelFor(len(kernels), func(lo, hi int) {
+		for ki := lo; ki < hi; ki++ {
+			k := &kernels[ki]
+			determinant := k.covXX*k.covYY - k.covXY*k.covXY
+			inverseXX := k.covYY / determinant
+			inverseXY := -k.covXY / determinant
+			inverseYY := k.covXX / determinant
+			twoSigmaSquared := 2 * k.sigma * k.sigma
 
-	for ki := range kernels {
-		k := &kernels[ki]
-		determinant := k.covXX*k.covYY - k.covXY*k.covXY
-		inverseXX := k.covYY / determinant
-		inverseXY := -k.covXY / determinant
-		inverseYY := k.covXX / determinant
-		twoSigmaSquared := 2 * k.sigma * k.sigma
-
-		maxLogWeight := math.Inf(-1)
-		for y := k.y0; y < k.y1; y++ {
-			for x := k.x0; x < k.x1; x++ {
-				p := pixels[x+y*inputWidth]
-				dx, dy := float64(x)+0.5-k.meanX, float64(y)+0.5-k.meanY
-				dl, da, db := p.color.l-k.color.l, p.color.a-k.color.a, p.color.b-k.color.b
-				// Deviates from pseudocode line 21: color distance is scaled by
-				// alpha so transparent pixels carry no color.
-				logWeight := -0.5*(dx*dx*inverseXX+2*dx*dy*inverseXY+dy*dy*inverseYY) -
-					p.alpha*(dl*dl+da*da+db*db)/twoSigmaSquared
-				k.gamma[(x-k.x0)+(y-k.y0)*k.stride] = logWeight
-				maxLogWeight = max(maxLogWeight, logWeight)
-			}
-		}
-		var kernelSum float64
-		for _, logWeight := range k.gamma {
-			kernelSum += math.Exp(logWeight - maxLogWeight)
-		}
-		kernelNormalization := maxLogWeight + math.Log(kernelSum)
-		for y := k.y0; y < k.y1; y++ {
-			for x := k.x0; x < k.x1; x++ {
-				index := (x - k.x0) + (y-k.y0)*k.stride
-				k.gamma[index] -= kernelNormalization
-				logWeight := k.gamma[index]
-				pixelIndex := x + y*inputWidth
-				if logWeight <= pixelMax[pixelIndex] {
-					pixelSum[pixelIndex] += math.Exp(logWeight - pixelMax[pixelIndex])
-					continue
+			maxLogWeight := math.Inf(-1)
+			for y := k.y0; y < k.y1; y++ {
+				for x := k.x0; x < k.x1; x++ {
+					p := pixels[x+y*inputWidth]
+					dx, dy := float64(x)+0.5-k.meanX, float64(y)+0.5-k.meanY
+					dl, da, db := p.color.l-k.color.l, p.color.a-k.color.a, p.color.b-k.color.b
+					// Deviates from pseudocode line 21: color distance is scaled by
+					// alpha so transparent pixels carry no color.
+					logWeight := -0.5*(dx*dx*inverseXX+2*dx*dy*inverseXY+dy*dy*inverseYY) -
+						p.alpha*(dl*dl+da*da+db*db)/twoSigmaSquared
+					k.gamma[(x-k.x0)+(y-k.y0)*k.stride] = logWeight
+					maxLogWeight = max(maxLogWeight, logWeight)
 				}
-				pixelSum[pixelIndex] = pixelSum[pixelIndex]*math.Exp(pixelMax[pixelIndex]-logWeight) + 1
-				pixelMax[pixelIndex] = logWeight
+			}
+			var kernelSum float64
+			for _, logWeight := range k.gamma {
+				kernelSum += math.Exp(logWeight - maxLogWeight)
+			}
+			kernelNormalization := maxLogWeight + math.Log(kernelSum)
+			for i := range k.gamma {
+				k.gamma[i] -= kernelNormalization
 			}
 		}
-	}
+	})
 
-	for ki := range kernels {
-		k := &kernels[ki]
-		for y := k.y0; y < k.y1; y++ {
-			for x := k.x0; x < k.x1; x++ {
-				index := (x - k.x0) + (y-k.y0)*k.stride
-				pixelIndex := x + y*inputWidth
-				k.gamma[index] = math.Exp(k.gamma[index] - pixelMax[pixelIndex] - math.Log(pixelSum[pixelIndex]))
+	// Per-pixel normalization, inverted to iterate over the kernels covering
+	// each pixel: rows are independent, and the fixed kernel order keeps the
+	// sums deterministic under any level of parallelism. Supports reach at
+	// most 2r+1 input pixels from the kernel center, under 3.5 grid units.
+	parallelFor(inputHeight, func(lo, hi int) {
+		for y := lo; y < hi; y++ {
+			gy0 := max(0, int(float64(y)/ry-3.5))
+			gy1 := min(height-1, int(float64(y)/ry+3.5))
+			for x := 0; x < inputWidth; x++ {
+				gx0 := max(0, int(float64(x)/rx-3.5))
+				gx1 := min(width-1, int(float64(x)/rx+3.5))
+				maxLog := math.Inf(-1)
+				for gy := gy0; gy <= gy1; gy++ {
+					for gx := gx0; gx <= gx1; gx++ {
+						k := &kernels[gx+gy*width]
+						if x < k.x0 || x >= k.x1 || y < k.y0 || y >= k.y1 {
+							continue
+						}
+						maxLog = max(maxLog, k.gamma[(x-k.x0)+(y-k.y0)*k.stride])
+					}
+				}
+				var sum float64
+				for gy := gy0; gy <= gy1; gy++ {
+					for gx := gx0; gx <= gx1; gx++ {
+						k := &kernels[gx+gy*width]
+						if x < k.x0 || x >= k.x1 || y < k.y0 || y >= k.y1 {
+							continue
+						}
+						index := (x - k.x0) + (y-k.y0)*k.stride
+						e := math.Exp(k.gamma[index] - maxLog)
+						k.gamma[index] = e
+						sum += e
+					}
+				}
+				pixelSum[x+y*inputWidth] = sum
 			}
 		}
-	}
+	})
+
+	parallelFor(len(kernels), func(lo, hi int) {
+		for ki := lo; ki < hi; ki++ {
+			k := &kernels[ki]
+			for y := k.y0; y < k.y1; y++ {
+				for x := k.x0; x < k.x1; x++ {
+					if sum := pixelSum[x+y*inputWidth]; sum > 0 {
+						k.gamma[(x-k.x0)+(y-k.y0)*k.stride] /= sum
+					}
+				}
+			}
+		}
+	})
 }
 
 // maximize updates each kernel's parameters, saving the pre-update state into
 // previous so convergence can be measured after correct.
 func maximize(kernels []kernel, pixels []pixel, inputWidth int, previous []state) {
-	for ki := range kernels {
-		k := &kernels[ki]
-		previous[ki] = k.state()
-		var weight, meanX, meanY, xx, xy, yy, l, a, b, alpha, colorWeight float64
-		for y := k.y0; y < k.y1; y++ {
-			for x := k.x0; x < k.x1; x++ {
-				gamma := k.gamma[(x-k.x0)+(y-k.y0)*k.stride]
-				p := pixels[x+y*inputWidth]
-				px, py := float64(x)+0.5, float64(y)+0.5
-				// Pseudocode line 37: covariance is taken about the old μ.
-				dx, dy := px-k.meanX, py-k.meanY
-				weight += gamma
-				meanX += gamma * px
-				meanY += gamma * py
-				xx += gamma * dx * dx
-				xy += gamma * dx * dy
-				yy += gamma * dy * dy
-				alpha += gamma * p.alpha
-				// Deviates from pseudocode line 39: ν is an alpha-weighted mean so
-				// transparent pixels carry no color.
-				cw := gamma * p.alpha
-				colorWeight += cw
-				l += cw * p.color.l
-				a += cw * p.color.a
-				b += cw * p.color.b
-			}
-		}
-		if weight == 0 {
-			continue
-		}
-		k.covXX, k.covXY, k.covYY = xx/weight, xy/weight, yy/weight
-		k.meanX, k.meanY = meanX/weight, meanY/weight
-		k.alpha = alpha / weight
-		if colorWeight > 0 {
-			k.color = lab{l: l / colorWeight, a: a / colorWeight, b: b / colorWeight}
-		}
-	}
-}
-
-func correct(kernels []kernel, inputWidth, inputHeight, width, height int, rx, ry float64, neighborMeans [][2]float64) {
-	for i, k := range kernels {
-		var x, y float64
-		count := 0
-		for _, offset := range cardinalOffsets {
-			nx, ny := k.gridX+offset[0], k.gridY+offset[1]
-			if nx < 0 || nx >= width || ny < 0 || ny >= height {
-				continue
-			}
-			n := kernels[nx+ny*width]
-			x, y, count = x+n.meanX, y+n.meanY, count+1
-		}
-		if count == 0 {
-			neighborMeans[i] = [2]float64{k.meanX, k.meanY}
-			continue
-		}
-		neighborMeans[i] = [2]float64{x / float64(count), y / float64(count)}
-	}
-
-	for i := range kernels {
-		k := &kernels[i]
-		k.meanX = min(max((k.meanX+neighborMeans[i][0])/2, k.centerX-rx/4), k.centerX+rx/4)
-		k.meanY = min(max((k.meanY+neighborMeans[i][1])/2, k.centerY-ry/4), k.centerY+ry/4)
-		clampCovariance(k, rx, ry)
-	}
-
-	for ki := range kernels {
-		k := &kernels[ki]
-		for _, offset := range neighborOffsets {
-			nx, ny := k.gridX+offset[0], k.gridY+offset[1]
-			if nx < 0 || nx >= width || ny < 0 || ny >= height {
-				continue
-			}
-			n := &kernels[nx+ny*width]
-			dx, dy := float64(offset[0]), float64(offset[1])
-			var weight, directionalVariance, edgeStrength float64
+	parallelFor(len(kernels), func(lo, hi int) {
+		for ki := lo; ki < hi; ki++ {
+			k := &kernels[ki]
+			previous[ki] = k.state()
+			var weight, meanX, meanY, xx, xy, yy, l, a, b, alpha, colorWeight float64
 			for y := k.y0; y < k.y1; y++ {
 				for x := k.x0; x < k.x1; x++ {
 					gamma := k.gamma[(x-k.x0)+(y-k.y0)*k.stride]
-					// Deviates from the pseudocode C-step shape constraint (s ← Σ γ max(0,(pi−μk)ᵀd)² vs
-					// 0.2·rx): taken literally in input pixels the raw sum is ~10×
-					// the limit for every kernel, so σ grows without bound and the
-					// result blurs. Use the mean squared projection in normalized
-					// (output-pixel) units against 0.2 instead.
-					projection := max(0, (float64(x)+0.5-k.meanX)/rx*dx+(float64(y)+0.5-k.meanY)/ry*dy)
+					p := pixels[x+y*inputWidth]
+					px, py := float64(x)+0.5, float64(y)+0.5
+					// Pseudocode line 37: covariance is taken about the old μ.
+					dx, dy := px-k.meanX, py-k.meanY
 					weight += gamma
-					directionalVariance += gamma * projection * projection
-					edgeStrength += gamma * n.gammaAt(x, y)
+					meanX += gamma * px
+					meanY += gamma * py
+					xx += gamma * dx * dx
+					xy += gamma * dx * dy
+					yy += gamma * dy * dy
+					alpha += gamma * p.alpha
+					// Deviates from pseudocode line 39: ν is an alpha-weighted mean so
+					// transparent pixels carry no color.
+					cw := gamma * p.alpha
+					colorWeight += cw
+					l += cw * p.color.l
+					a += cw * p.color.a
+					b += cw * p.color.b
 				}
 			}
 			if weight == 0 {
 				continue
 			}
+			k.covXX, k.covXY, k.covYY = xx/weight, xy/weight, yy/weight
+			k.meanX, k.meanY = meanX/weight, meanY/weight
+			k.alpha = alpha / weight
+			if colorWeight > 0 {
+				k.color = lab{l: l / colorWeight, a: a / colorWeight, b: b / colorWeight}
+			}
+		}
+	})
+}
+func correct(kernels []kernel, inputWidth, inputHeight, width, height int, rx, ry float64, neighborMeans [][2]float64) {
+	parallelFor(len(kernels), func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			k := &kernels[i]
+			var x, y float64
+			count := 0
+			for _, offset := range cardinalOffsets {
+				nx, ny := k.gridX+offset[0], k.gridY+offset[1]
+				if nx < 0 || nx >= width || ny < 0 || ny >= height {
+					continue
+				}
+				n := &kernels[nx+ny*width]
+				x, y, count = x+n.meanX, y+n.meanY, count+1
+			}
+			if count == 0 {
+				neighborMeans[i] = [2]float64{k.meanX, k.meanY}
+				continue
+			}
+			neighborMeans[i] = [2]float64{x / float64(count), y / float64(count)}
+		}
+	})
 
-			falseEdge := false
-			if (offset[0] == 0 || offset[1] == 0) && edgeStrength < 0.08 {
-				ox, oy := edgeOrientation(k, n, inputWidth, inputHeight)
-				magnitude := math.Hypot(ox, oy)
-				if magnitude > 0 {
-					cosine := math.Abs(dx*ox+dy*oy) / (math.Hypot(dx, dy) * magnitude)
-					falseEdge = min(cosine, 1) < math.Cos(25*math.Pi/180)
+	parallelFor(len(kernels), func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			k := &kernels[i]
+			k.meanX = min(max((k.meanX+neighborMeans[i][0])/2, k.centerX-rx/4), k.centerX+rx/4)
+			k.meanY = min(max((k.meanY+neighborMeans[i][1])/2, k.centerY-ry/4), k.centerY+ry/4)
+			clampCovariance(k, rx, ry)
+		}
+	})
+
+	// The σ updates write into neighbors as well, so the parallel pass only
+	// counts them and the multiplications are applied serially afterwards;
+	// nothing in this pass reads σ, so deferring is equivalent.
+	bumps := make([]int32, len(kernels))
+	parallelFor(len(kernels), func(lo, hi int) {
+		var scratch edgeScratch
+		for ki := lo; ki < hi; ki++ {
+			k := &kernels[ki]
+			for _, offset := range neighborOffsets {
+				nx, ny := k.gridX+offset[0], k.gridY+offset[1]
+				if nx < 0 || nx >= width || ny < 0 || ny >= height {
+					continue
+				}
+				n := &kernels[nx+ny*width]
+				dx, dy := float64(offset[0]), float64(offset[1])
+				var weight, directionalVariance, edgeStrength float64
+				for y := k.y0; y < k.y1; y++ {
+					for x := k.x0; x < k.x1; x++ {
+						gamma := k.gamma[(x-k.x0)+(y-k.y0)*k.stride]
+						// Deviates from the pseudocode C-step shape constraint (s ← Σ γ max(0,(pi−μk)ᵀd)² vs
+						// 0.2·rx): taken literally in input pixels the raw sum is ~10×
+						// the limit for every kernel, so σ grows without bound and the
+						// result blurs. Use the mean squared projection in normalized
+						// (output-pixel) units against 0.2 instead.
+						projection := max(0, (float64(x)+0.5-k.meanX)/rx*dx+(float64(y)+0.5-k.meanY)/ry*dy)
+						weight += gamma
+						directionalVariance += gamma * projection * projection
+						edgeStrength += gamma * n.gammaAt(x, y)
+					}
+				}
+				if weight == 0 {
+					continue
+				}
+
+				falseEdge := false
+				if (offset[0] == 0 || offset[1] == 0) && edgeStrength < 0.08 {
+					ox, oy := edgeOrientation(k, n, inputWidth, inputHeight, &scratch)
+					magnitude := math.Hypot(ox, oy)
+					if magnitude > 0 {
+						cosine := math.Abs(dx*ox+dy*oy) / (math.Hypot(dx, dy) * magnitude)
+						falseEdge = min(cosine, 1) < math.Cos(25*math.Pi/180)
+					}
+				}
+				if directionalVariance/weight > 0.2 || falseEdge {
+					atomic.AddInt32(&bumps[ki], 1)
+					atomic.AddInt32(&bumps[nx+ny*width], 1)
 				}
 			}
-			if directionalVariance/weight > 0.2 || falseEdge {
-				k.sigma *= 1.1
-				n.sigma *= 1.1
-			}
+		}
+	})
+	for i, n := range bumps {
+		for range n {
+			kernels[i].sigma *= 1.1
 		}
 	}
 }
@@ -360,23 +410,50 @@ func (k *kernel) gammaAt(x, y int) float64 {
 	return k.gamma[(x-k.x0)+(y-k.y0)*k.stride]
 }
 
-func edgeOrientation(k, n *kernel, width, height int) (float64, float64) {
-	ratio := func(x, y int) (float64, bool) {
-		x = min(max(x, 0), width-1)
-		y = min(max(y, 0), height-1)
-		kg, ng := k.gammaAt(x, y), n.gammaAt(x, y)
-		if kg+ng == 0 {
-			return 0, false
+// edgeScratch holds three reusable ratio rows for edgeOrientation, one per
+// goroutine.
+type edgeScratch struct {
+	vals [3][]float64
+	ok   [3][]bool
+}
+
+// edgeOrientation estimates the gradient of the ratio field kγ/(kγ+nγ) over
+// k's support. Each ratio row is computed once into scratch and shared by the
+// central differences of the neighboring rows.
+func edgeOrientation(k, n *kernel, width, height int, s *edgeScratch) (float64, float64) {
+	w := k.x1 - k.x0 + 2 // ratios for x in [k.x0-1, k.x1]
+	for i := range 3 {
+		if cap(s.vals[i]) < w {
+			s.vals[i] = make([]float64, w)
+			s.ok[i] = make([]bool, w)
 		}
-		return kg / (kg + ng), true
+		s.vals[i] = s.vals[i][:w]
+		s.ok[i] = s.ok[i][:w]
 	}
+	fill := func(vals []float64, ok []bool, y int) {
+		y = min(max(y, 0), height-1)
+		for i := range w {
+			x := min(max(k.x0-1+i, 0), width-1)
+			kg, ng := k.gammaAt(x, y), n.gammaAt(x, y)
+			if kg+ng == 0 {
+				ok[i] = false
+				continue
+			}
+			vals[i], ok[i] = kg/(kg+ng), true
+		}
+	}
+	prev, cur, next := 0, 1, 2
+	fill(s.vals[prev], s.ok[prev], k.y0-1)
+	fill(s.vals[cur], s.ok[cur], k.y0)
 
 	var ox, oy float64
 	for y := k.y0; y < k.y1; y++ {
+		fill(s.vals[next], s.ok[next], y+1)
 		for x := k.x0; x < k.x1; x++ {
-			center, centerOK := ratio(x, y)
-			left, leftOK := ratio(x-1, y)
-			right, rightOK := ratio(x+1, y)
+			i := x - k.x0 + 1
+			center, centerOK := s.vals[cur][i], s.ok[cur][i]
+			left, leftOK := s.vals[cur][i-1], s.ok[cur][i-1]
+			right, rightOK := s.vals[cur][i+1], s.ok[cur][i+1]
 			switch {
 			case leftOK && rightOK:
 				ox += (right - left) / 2
@@ -385,8 +462,8 @@ func edgeOrientation(k, n *kernel, width, height int) (float64, float64) {
 			case leftOK && centerOK:
 				ox += center - left
 			}
-			top, topOK := ratio(x, y-1)
-			bottom, bottomOK := ratio(x, y+1)
+			top, topOK := s.vals[prev][i], s.ok[prev][i]
+			bottom, bottomOK := s.vals[next][i], s.ok[next][i]
 			switch {
 			case topOK && bottomOK:
 				oy += (bottom - top) / 2
@@ -396,8 +473,29 @@ func edgeOrientation(k, n *kernel, width, height int) (float64, float64) {
 				oy += center - top
 			}
 		}
+		prev, cur, next = cur, next, prev
 	}
 	return ox, oy
+}
+
+// parallelFor runs fn over [0, n) split into one contiguous chunk per
+// available CPU.
+func parallelFor(n int, fn func(lo, hi int)) {
+	workers := min(runtime.GOMAXPROCS(0), n)
+	if workers <= 1 {
+		fn(0, n)
+		return
+	}
+	var wg sync.WaitGroup
+	for w := range workers {
+		lo, hi := n*w/workers, n*(w+1)/workers
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn(lo, hi)
+		}()
+	}
+	wg.Wait()
 }
 
 func converged(previous []state, kernels []kernel) bool {

@@ -142,7 +142,7 @@ func TestExpectation_NormalizesPerKernelFirst(t *testing.T) {
 	a.x0, a.x1, a.y1, a.stride, a.gamma = 0, 1, 1, 1, make([]float64, 1)
 	b.x0, b.x1, b.y1, b.stride, b.gamma = 0, 2, 1, 2, make([]float64, 2)
 	kernels := []kernel{a, b}
-	expectation(kernels, pixels, 2, make([]float64, 2), make([]float64, 2))
+	expectation(kernels, pixels, 2, 1, 2, 1, 1, 1, make([]float64, 2))
 	// Pixel 0: a=1, b=½ → γa=⅔, γb=⅓. Pixel 1: only b → γb=1.
 	got := []float64{kernels[0].gamma[0], kernels[1].gamma[0], kernels[1].gamma[1]}
 	for i, want := range []float64{2.0 / 3, 1.0 / 3, 1} {
